@@ -35,6 +35,8 @@ class FakeClient:
 
 
 def _register_seatalk_auth_entry():
+    if platform_registry.is_registered("seatalk"):
+        return
     platform_registry.register(PlatformEntry(
         name="seatalk",
         label="SeaTalk",
@@ -52,6 +54,7 @@ def _gateway_auth(source: SessionSource) -> bool:
 
 
 def _source(user_id, user_id_alt="EmpABC", chat_type="dm", chat_id="EmpABC"):
+    _register_seatalk_auth_entry()
     return SessionSource(
         platform=Platform("seatalk"),
         chat_id=chat_id,

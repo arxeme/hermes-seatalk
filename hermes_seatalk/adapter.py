@@ -621,6 +621,7 @@ def _seatalk_setup_wizard() -> None:
         ("SEATALK_HOME_CHANNEL_THREAD_ID", "Default thread id (optional)"),
         ("SEATALK_ALLOWED_USERS", "Allowed users, comma-separated emails (optional)"),
         ("SEATALK_GROUP_ALLOWED_USERS", "Allowed groups, comma-separated group/<id> (optional)"),
+        ("SEATALK_REQUIRE_MENTION", "Require bot mention in groups, true/false (optional)"),
     ):
         value = prompt(label, default=get_env_value(env_name) or "")
         if value:

@@ -4,7 +4,7 @@
 
 ## 1. 当前结论
 
-当前已完成 checkpoint 1、checkpoint 2 和 checkpoint 3 的实现与自动化验证：
+当前已完成 checkpoint 1、checkpoint 2、checkpoint 3 和 checkpoint 4 的实现与自动化验证：
 
 - W-00 Plugin 包骨架与安装入口：PASS
 - W-01 Plugin 注册与平台状态语义：PASS
@@ -15,6 +15,9 @@
 - W-06 入站标准化与调度：PASS
 - W-07 鉴权与群过滤：PASS
 - W-08 Hermes 兼容性补丁：PASS
+- W-09 配置、安装与运维文档：PASS
+- W-10 自动化测试集：PASS
+- W-11 真实 SeaTalk 联调验证：RUNBOOK READY，真实 E2E 执行 PENDING
 
 本 TR 采用滚动记录方式：后续每完成一个 checkpoint，在同一文件追加对应测试结果、回归命令和未覆盖项。
 
@@ -25,7 +28,7 @@
 | 工作目录 | `/Users/yuy/Work/go/gitlab.garena.com/ai-agent/voyager/openclaw/hermes-seatalk` |
 | Python 环境 | plugin repo 有 `pyproject.toml`；当前测试仍复用 sibling `../../hermes-agent` 的 `uv` 环境 |
 | 测试框架 | `pytest`、`pytest-asyncio` |
-| 外部依赖 | SeaTalk OpenAPI 使用 fake session/mock response 离线验证，未访问真实 SeaTalk 服务 |
+| 外部依赖 | SeaTalk OpenAPI 使用 fake session/mock response 离线验证；W-11 真实联调仍需真实 SeaTalk 服务 |
 
 说明：当前 plugin repo 尚未建立独立 dev/test 虚拟环境，因此测试命令通过 `uv run --directory ../../hermes-agent` 复用 hermes-agent 的依赖环境执行。
 
@@ -259,6 +262,64 @@ collected 47 items
 - `_seatalk_send_to_platform()`
 - `register(ctx)` 中四处 patch 的幂等调用
 
+### W-09 配置、安装与运维文档
+
+| 用例 | 结果 | 证据 |
+| --- | --- | --- |
+| README 命令可执行 | PASS | `tests/test_w09_operations_docs.py` |
+| enable/restart 说明准确 | PASS | `tests/test_w09_operations_docs.py` |
+| TUI 出现条件 | PASS | `tests/test_w09_operations_docs.py` |
+| setup wizard 顺序 | PASS | `tests/test_w09_operations_docs.py` |
+| relay 互斥配置 | PASS | `tests/test_w09_operations_docs.py` |
+| webhook 互斥配置 | PASS | `tests/test_w09_operations_docs.py` |
+| 鉴权边界清晰 | PASS | `tests/test_w09_operations_docs.py` |
+| 排查路径可用 | PASS | `tests/test_w09_operations_docs.py` |
+
+当前交付物：
+
+- `README.md` 安装、启用、TUI、模式互斥、状态与排查说明
+- `env.example` 可选 coalescing/debounce 配置示例
+- `_seatalk_setup_wizard()` 补充 group mention policy 可选项
+
+### W-10 自动化测试集
+
+| 用例 | 结果 | 证据 |
+| --- | --- | --- |
+| 测试可离线运行 | PASS | `tests/test_w10_test_quality.py` |
+| env 隔离 | PASS | `tests/test_w10_test_quality.py`, `tests/conftest.py` |
+| registry 隔离 | PASS | `tests/test_w10_test_quality.py`, `tests/conftest.py` |
+| patch 状态隔离 | PASS | `tests/test_w10_test_quality.py`, `tests/conftest.py` |
+| 重复运行稳定 | PASS | 连续两次完整 suite 均为 `83 passed` |
+
+当前交付物：
+
+- pytest autouse fixture 隔离 SeaTalk/Gateway env
+- pytest autouse fixture 隔离 Hermes `platform_registry`
+- pytest autouse fixture 隔离 `send_message`、home channel、cron runtime patch
+- W-09/W-10 自动化测试
+- W-07 测试修正为独立注册 `seatalk` platform，不依赖前序测试泄漏状态
+
+### W-11 真实 SeaTalk 联调验证
+
+| 用例 | 结果 | 证据 |
+| --- | --- | --- |
+| E-01 Bot App 配置 | PENDING | `docs/test/e2e_hermes-seatalk-plugin_runbook_zh.md` |
+| E-02 用户私聊入站 | PENDING | `docs/test/e2e_hermes-seatalk-plugin_runbook_zh.md` |
+| E-03 群聊入站 | PENDING | `docs/test/e2e_hermes-seatalk-plugin_runbook_zh.md` |
+| E-04 出站工具调用 | PENDING | `docs/test/e2e_hermes-seatalk-plugin_runbook_zh.md` |
+| E-05 home channel | PENDING | `docs/test/e2e_hermes-seatalk-plugin_runbook_zh.md` |
+| E-06 未授权用户 | PENDING | `docs/test/e2e_hermes-seatalk-plugin_runbook_zh.md` |
+| E-07 未授权群 | PENDING | `docs/test/e2e_hermes-seatalk-plugin_runbook_zh.md` |
+| E-08 文件或图片 | PENDING | `docs/test/e2e_hermes-seatalk-plugin_runbook_zh.md` |
+| E-09 relay/webhook runtime health | PENDING | `docs/test/e2e_hermes-seatalk-plugin_runbook_zh.md` |
+
+当前交付物：
+
+- 真实联调 runbook
+- Bot App 配置摘要模板
+- E-01 到 E-09 结果记录表
+- 问题回流路径
+
 ## 5. Checkpoint 3 回归记录
 
 执行命令：
@@ -294,18 +355,78 @@ collected 67 items
 67 passed in 1.33s
 ```
 
-## 6. 未覆盖项 / Deferred
+## 6. Checkpoint 4 回归记录
+
+执行命令：
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 uv run --directory ../../hermes-agent pytest \
+  ../openclaw/hermes-seatalk/tests
+```
+
+执行结果：
+
+```text
+collected 83 items
+
+../openclaw/hermes-seatalk/tests/test_w00_plugin_skeleton.py .....       [  6%]
+../openclaw/hermes-seatalk/tests/test_w01_registration.py ........       [ 15%]
+../openclaw/hermes-seatalk/tests/test_w02_openapi_client.py ...........  [ 28%]
+../openclaw/hermes-seatalk/tests/test_w03_outbound_adapter.py .......... [ 40%]
+../openclaw/hermes-seatalk/tests/test_w04_webhook.py .......             [ 49%]
+../openclaw/hermes-seatalk/tests/test_w05_relay.py ......                [ 56%]
+../openclaw/hermes-seatalk/tests/test_w06_dispatcher.py ......           [ 63%]
+../openclaw/hermes-seatalk/tests/test_w07_authorization.py ......        [ 71%]
+../openclaw/hermes-seatalk/tests/test_w08_runtime_patch.py ........      [ 80%]
+../openclaw/hermes-seatalk/tests/test_w09_operations_docs.py ........    [ 90%]
+../openclaw/hermes-seatalk/tests/test_w10_test_quality.py ........       [100%]
+
+83 passed in 1.15s
+```
+
+重复执行结果：
+
+```text
+83 passed in 1.20s
+```
+
+覆盖率命令：
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 uv run --with coverage --directory ../../hermes-agent \
+  coverage run -m pytest ../openclaw/hermes-seatalk/tests
+
+uv run --with coverage --directory ../../hermes-agent \
+  coverage report -m --include '../openclaw/hermes-seatalk/hermes_seatalk/*'
+```
+
+覆盖率结果摘要：
+
+```text
+Name                      Stmts   Miss  Cover
+------------------------------------------------
+hermes_seatalk/__init__.py    2      0   100%
+hermes_seatalk/adapter.py   435    123    72%
+hermes_seatalk/client.py    282     72    74%
+hermes_seatalk/coalescer.py  90     18    80%
+hermes_seatalk/dispatcher.py 318     74    77%
+hermes_seatalk/relay.py     112     19    83%
+hermes_seatalk/targets.py    37      8    78%
+hermes_seatalk/webhook.py    75      5    93%
+------------------------------------------------
+TOTAL                      1351    319    76%
+```
+
+## 7. 未覆盖项 / Deferred
 
 | 项目 | 状态 | 原因 |
 | --- | --- | --- |
-| 真实 SeaTalk OpenAPI E2E | PENDING | 需要真实 Bot App credentials 和外部网络 |
-| 真实 SeaTalk webhook/relay E2E | PENDING | 需要真实 callback URL / relay service / Bot App |
+| 真实 SeaTalk OpenAPI E2E | PENDING | 需要真实 Bot App credentials 和外部网络；执行入口见 `docs/test/e2e_hermes-seatalk-plugin_runbook_zh.md` |
+| 真实 SeaTalk webhook/relay E2E | PENDING | 需要真实 callback URL / relay service / Bot App；执行入口见 `docs/test/e2e_hermes-seatalk-plugin_runbook_zh.md` |
 | plugin repo 独立 test env | PENDING | 已有 `pyproject.toml`，但当前仍复用 `../../hermes-agent` 的 `uv` 环境运行 pytest |
-| W-09 setup/status 用户引导闭环 | PENDING | 仅有 W-01 基础 setup wizard，完整 status/list 仍待实现 |
-| W-10 自动化测试集 | PENDING | 当前已有 W-00 到 W-08 自动化测试，完整 suite 待后续任务补齐 |
-| W-11 文档与发布 | PENDING | 尚未进入发布验证 |
+| W-11 真实联调执行 | PENDING | runbook 已准备；需要 HITL 提供真实 SeaTalk Bot App、用户、群和模式链路 |
 
-## 7. 回归命令
+## 8. 回归命令
 
 当前最小回归命令：
 
@@ -320,4 +441,11 @@ PYTHONDONTWRITEBYTECODE=1 uv run --directory ../../hermes-agent pytest \
   ../openclaw/hermes-seatalk/tests/test_w06_dispatcher.py \
   ../openclaw/hermes-seatalk/tests/test_w07_authorization.py \
   ../openclaw/hermes-seatalk/tests/test_w08_runtime_patch.py
+```
+
+当前完整回归命令：
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 uv run --directory ../../hermes-agent pytest \
+  ../openclaw/hermes-seatalk/tests
 ```
