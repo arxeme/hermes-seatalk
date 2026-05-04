@@ -4,7 +4,7 @@
 
 ## 1. 当前结论
 
-当前已完成 checkpoint 1 和 checkpoint 2 的实现与自动化验证：
+当前已完成 checkpoint 1、checkpoint 2 和 checkpoint 3 的实现与自动化验证：
 
 - W-00 Plugin 包骨架与安装入口：PASS
 - W-01 Plugin 注册与平台状态语义：PASS
@@ -12,6 +12,9 @@
 - W-03 Hermes 出站适配器：PASS
 - W-04 Webhook 入站模式：PASS
 - W-05 Relay 入站模式：PASS
+- W-06 入站标准化与调度：PASS
+- W-07 鉴权与群过滤：PASS
+- W-08 Hermes 兼容性补丁：PASS
 
 本 TR 采用滚动记录方式：后续每完成一个 checkpoint，在同一文件追加对应测试结果、回归命令和未覆盖项。
 
@@ -193,21 +196,116 @@ collected 47 items
 - reconnect backoff
 - adapter relay connect/disconnect
 
-## 5. 未覆盖项 / Deferred
+### W-06 入站标准化与调度
+
+| 用例 | 结果 | 证据 |
+| --- | --- | --- |
+| webhook/relay 同构，生成相同 Hermes input schema | PASS | `tests/test_w06_dispatcher.py` |
+| 同一用户同一 channel/thread 的 session key 稳定 | PASS | `tests/test_w06_dispatcher.py` |
+| 相同 SeaTalk event id 重复投递只触发一次 | PASS | `tests/test_w06_dispatcher.py` |
+| 连续短消息按 TD debounce 规则合并后调度 | PASS | `tests/test_w06_dispatcher.py` |
+| quoted message 保留到正文前缀和 reply metadata | PASS | `tests/test_w06_dispatcher.py` |
+| 附件下载失败时文本/占位仍进入 agent，错误写入 metadata | PASS | `tests/test_w06_dispatcher.py` |
+
+当前交付物：
+
+- `hermes_seatalk/dispatcher.py`
+- `SeaTalkEventDispatcher`
+- `app_id:event_id` 去重缓存
+- DM/group/thread event normalizer
+- inbound debounce buffer
+- quoted message resolve fallback
+- 入站 media 下载与失败降级
+- adapter webhook/relay 共享 dispatcher 入口
+
+### W-07 鉴权与群过滤
+
+| 用例 | 结果 | 证据 |
+| --- | --- | --- |
+| 有 email 时优先用 email 作为 `source.user_id` | PASS | `tests/test_w07_authorization.py` |
+| 无 email 时 fallback 到 employee code | PASS | `tests/test_w07_authorization.py` |
+| 不在 allowlist 的用户经 Hermes gateway auth 被拒绝 | PASS | `tests/test_w07_authorization.py` |
+| group allowlist 命中时继续执行用户鉴权路径 | PASS | `tests/test_w07_authorization.py` |
+| group allowlist 未命中时 dispatcher 预过滤拒绝 | PASS | `tests/test_w07_authorization.py` |
+| 拒绝日志包含 channel 和 reason，不泄漏 secret 或 sender email | PASS | `tests/test_w07_authorization.py` |
+
+当前交付物：
+
+- `MessageEvent.source.user_id` email 优先 / employee fallback
+- `MessageEvent.source.user_id_alt` 保留 employee code
+- `SEATALK_GROUP_ALLOWED_USERS` channel pre-filter
+- 基于 Hermes `PlatformEntry.allowed_users_env` 的 gateway auth 验证
+- group 拒绝日志脱敏
+
+### W-08 Hermes 兼容性补丁
+
+| 用例 | 结果 | 证据 |
+| --- | --- | --- |
+| `send_message(target="seatalk")` 可路由到 SeaTalk adapter | PASS | `tests/test_w08_runtime_patch.py` |
+| `_send_to_platform` 支持 SeaTalk 并保留 thread/media | PASS | `tests/test_w08_runtime_patch.py` |
+| `get_home_channel("seatalk")` 返回 `SEATALK_HOME_CHANNEL` | PASS | `tests/test_w08_runtime_patch.py` |
+| `SEATALK_HOME_CHANNEL_THREAD_ID` 被保留 | PASS | `tests/test_w08_runtime_patch.py` |
+| cron target 支持 `seatalk` home channel | PASS | `tests/test_w08_runtime_patch.py` |
+| runtime patch 幂等，不重复包装 | PASS | `tests/test_w08_runtime_patch.py` |
+| Slack/Discord 内置平台 target parser 行为不变 | PASS | `tests/test_w08_runtime_patch.py` |
+| SeaTalk target parser 覆盖 employee/email/group/thread 全格式 | PASS | `tests/test_w08_runtime_patch.py` |
+
+当前交付物：
+
+- `_patch_cron_scheduler()`
+- `_patch_send_message_tool()`
+- `_patch_send_to_platform()`
+- `_patch_home_channel()`
+- `_seatalk_send_to_platform()`
+- `register(ctx)` 中四处 patch 的幂等调用
+
+## 5. Checkpoint 3 回归记录
+
+执行命令：
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 uv run --directory ../../hermes-agent pytest \
+  ../openclaw/hermes-seatalk/tests/test_w00_plugin_skeleton.py \
+  ../openclaw/hermes-seatalk/tests/test_w01_registration.py \
+  ../openclaw/hermes-seatalk/tests/test_w02_openapi_client.py \
+  ../openclaw/hermes-seatalk/tests/test_w03_outbound_adapter.py \
+  ../openclaw/hermes-seatalk/tests/test_w04_webhook.py \
+  ../openclaw/hermes-seatalk/tests/test_w05_relay.py \
+  ../openclaw/hermes-seatalk/tests/test_w06_dispatcher.py \
+  ../openclaw/hermes-seatalk/tests/test_w07_authorization.py \
+  ../openclaw/hermes-seatalk/tests/test_w08_runtime_patch.py
+```
+
+执行结果：
+
+```text
+collected 67 items
+
+../openclaw/hermes-seatalk/tests/test_w00_plugin_skeleton.py .....       [  7%]
+../openclaw/hermes-seatalk/tests/test_w01_registration.py ........       [ 19%]
+../openclaw/hermes-seatalk/tests/test_w02_openapi_client.py ...........  [ 35%]
+../openclaw/hermes-seatalk/tests/test_w03_outbound_adapter.py .......... [ 50%]
+../openclaw/hermes-seatalk/tests/test_w04_webhook.py .......             [ 61%]
+../openclaw/hermes-seatalk/tests/test_w05_relay.py ......                [ 70%]
+../openclaw/hermes-seatalk/tests/test_w06_dispatcher.py ......           [ 79%]
+../openclaw/hermes-seatalk/tests/test_w07_authorization.py ......        [ 88%]
+../openclaw/hermes-seatalk/tests/test_w08_runtime_patch.py ........      [100%]
+
+67 passed in 1.33s
+```
+
+## 6. 未覆盖项 / Deferred
 
 | 项目 | 状态 | 原因 |
 | --- | --- | --- |
 | 真实 SeaTalk OpenAPI E2E | PENDING | 需要真实 Bot App credentials 和外部网络 |
 | 真实 SeaTalk webhook/relay E2E | PENDING | 需要真实 callback URL / relay service / Bot App |
 | plugin repo 独立 test env | PENDING | 已有 `pyproject.toml`，但当前仍复用 `../../hermes-agent` 的 `uv` 环境运行 pytest |
-| W-06 入站事件 dispatcher | PENDING | 尚未实现 |
-| W-07 授权与 group channel 过滤 | PENDING | 尚未实现 |
-| W-08 Hermes send_message/cron 集成 | PENDING | 尚未实现 |
 | W-09 setup/status 用户引导闭环 | PENDING | 仅有 W-01 基础 setup wizard，完整 status/list 仍待实现 |
-| W-10 自动化测试集 | PENDING | 当前已有 W-00/W-01/W-02 测试，完整 suite 待后续任务补齐 |
+| W-10 自动化测试集 | PENDING | 当前已有 W-00 到 W-08 自动化测试，完整 suite 待后续任务补齐 |
 | W-11 文档与发布 | PENDING | 尚未进入发布验证 |
 
-## 6. 回归命令
+## 7. 回归命令
 
 当前最小回归命令：
 
@@ -218,5 +316,8 @@ PYTHONDONTWRITEBYTECODE=1 uv run --directory ../../hermes-agent pytest \
   ../openclaw/hermes-seatalk/tests/test_w02_openapi_client.py \
   ../openclaw/hermes-seatalk/tests/test_w03_outbound_adapter.py \
   ../openclaw/hermes-seatalk/tests/test_w04_webhook.py \
-  ../openclaw/hermes-seatalk/tests/test_w05_relay.py
+  ../openclaw/hermes-seatalk/tests/test_w05_relay.py \
+  ../openclaw/hermes-seatalk/tests/test_w06_dispatcher.py \
+  ../openclaw/hermes-seatalk/tests/test_w07_authorization.py \
+  ../openclaw/hermes-seatalk/tests/test_w08_runtime_patch.py
 ```

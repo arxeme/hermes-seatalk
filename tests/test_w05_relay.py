@@ -38,9 +38,9 @@ def _client(url, dispatch, **kwargs):
         app_secret="app-secret",
         signing_secret="signing-secret",
         dispatch=dispatch,
-        reconnect_initial_seconds=0,
-        reconnect_max_seconds=0,
-        sleep_fn=_noop_sleep,
+        reconnect_initial_seconds=kwargs.pop("reconnect_initial_seconds", 0),
+        reconnect_max_seconds=kwargs.pop("reconnect_max_seconds", 0),
+        sleep_fn=kwargs.pop("sleep_fn", _noop_sleep),
         **kwargs,
     )
 
@@ -166,7 +166,14 @@ async def test_t05_05_heartbeat_timeout_marks_state():
         await release.wait()
 
     runner, url = await _start_ws_server(handler)
-    client = _client(url, lambda _event, _source: None, heartbeat_timeout_seconds=0.05)
+    client = _client(
+        url,
+        lambda _event, _source: None,
+        heartbeat_timeout_seconds=0.05,
+        reconnect_initial_seconds=60,
+        reconnect_max_seconds=60,
+        sleep_fn=asyncio.sleep,
+    )
     try:
         assert await client.start(timeout=1) is True
         for _ in range(30):

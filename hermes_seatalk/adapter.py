@@ -40,6 +40,7 @@ from .client import (
     prepare_outbound_media_bytes,
 )
 from .coalescer import OutboundCoalescerMap
+from .dispatcher import SeaTalkEventDispatcher
 from .relay import SeaTalkRelayClient
 from .targets import SeaTalkTarget, parse_seatalk_target
 from .webhook import SeaTalkWebhookServer
@@ -223,6 +224,26 @@ class SeaTalkAdapter(BasePlatformAdapter):
         )
         self.inbound_events: list[tuple[dict[str, Any], str]] = []
         self._seatalk_event_handler = self.extra.get("event_handler")
+        allow_hosts = _cfg_csv(config, "SEATALK_MEDIA_ALLOW_HOSTS", "media_allow_hosts")
+        self._dispatcher = self.extra.get("dispatcher") or SeaTalkEventDispatcher(
+            adapter=self,
+            client=self.client,
+            app_id=self.app_id,
+            emit=self.extra.get("message_event_handler"),
+            media_allow_hosts=allow_hosts or None,
+            debounce_idle_seconds=_cfg_float(
+                config,
+                "SEATALK_INBOUND_DEBOUNCE_IDLE_SECONDS",
+                "inbound_debounce_idle_seconds",
+                1.5,
+            ),
+            debounce_max_seconds=_cfg_float(
+                config,
+                "SEATALK_INBOUND_DEBOUNCE_MAX_SECONDS",
+                "inbound_debounce_max_seconds",
+                5.0,
+            ),
+        )
         self._webhook_server: SeaTalkWebhookServer | None = None
         self._relay_client: SeaTalkRelayClient | None = None
         self._coalescers = OutboundCoalescerMap(
@@ -289,6 +310,9 @@ class SeaTalkAdapter(BasePlatformAdapter):
             return False
 
     async def disconnect(self) -> None:
+        flush_inbound = getattr(self._dispatcher, "flush_all", None)
+        if flush_inbound:
+            await flush_inbound()
         await self.flush_outbound()
         if self._relay_client is not None:
             await self._relay_client.stop()
@@ -425,6 +449,7 @@ class SeaTalkAdapter(BasePlatformAdapter):
             result = handler(event, source)
             if asyncio.iscoroutine(result):
                 await result
+        await self._dispatcher.dispatch(event, source)
         self._mark_running()
 
     async def _resolve_target(
@@ -605,8 +630,183 @@ def _seatalk_setup_wizard() -> None:
     print_info("Restart the gateway for changes to take effect: hermes gateway restart")
 
 
+def _cfg_csv(config: Any, env_name: str, extra_name: str) -> set[str]:
+    raw = os.getenv(env_name)
+    if raw is None:
+        raw_value = _extra(config).get(extra_name)
+        if isinstance(raw_value, (list, tuple, set)):
+            return {str(item).strip().lower() for item in raw_value if str(item).strip()}
+        raw = str(raw_value or "")
+    return {item.strip().lower() for item in raw.split(",") if item.strip()}
+
+
+def _patch_cron_scheduler() -> None:
+    """Add SeaTalk to cron delivery platform and home target maps."""
+    try:
+        import cron.scheduler as scheduler
+    except ImportError:
+        return
+
+    known = getattr(scheduler, "_KNOWN_DELIVERY_PLATFORMS", frozenset())
+    if SEATALK_PLATFORM not in known:
+        scheduler._KNOWN_DELIVERY_PLATFORMS = frozenset(set(known) | {SEATALK_PLATFORM})
+
+    home_envs = getattr(scheduler, "_HOME_TARGET_ENV_VARS", None)
+    if isinstance(home_envs, dict):
+        home_envs.setdefault(SEATALK_PLATFORM, "SEATALK_HOME_CHANNEL")
+
+
+def _patch_send_message_tool() -> None:
+    """Inject SeaTalk target parsing into ``send_message``."""
+    try:
+        import tools.send_message_tool as send_message_tool
+    except ImportError:
+        return
+
+    original = send_message_tool._parse_target_ref
+    if getattr(original, "_seatalk_patched", False):
+        return
+
+    def _patched_parse(platform_name: str, target_ref: str):
+        if platform_name == SEATALK_PLATFORM:
+            try:
+                target = parse_seatalk_target(target_ref)
+            except ValueError:
+                return None, None, False
+            return target.chat_id, target.thread_id, True
+        return original(platform_name, target_ref)
+
+    _patched_parse._seatalk_patched = True  # type: ignore[attr-defined]
+    _patched_parse._seatalk_original = original  # type: ignore[attr-defined]
+    send_message_tool._parse_target_ref = _patched_parse
+
+
+def _patch_send_to_platform() -> None:
+    """Route SeaTalk send_message calls through the live SeaTalk adapter."""
+    try:
+        import tools.send_message_tool as send_message_tool
+    except ImportError:
+        return
+
+    original = send_message_tool._send_to_platform
+    if getattr(original, "_seatalk_patched", False):
+        return
+
+    async def _patched_send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None):
+        if _platform_value(platform) == SEATALK_PLATFORM:
+            return await _seatalk_send_to_platform(
+                platform,
+                chat_id,
+                message,
+                thread_id=thread_id,
+                media_files=media_files or [],
+            )
+        return await original(
+            platform,
+            pconfig,
+            chat_id,
+            message,
+            thread_id=thread_id,
+            media_files=media_files,
+        )
+
+    _patched_send_to_platform._seatalk_patched = True  # type: ignore[attr-defined]
+    _patched_send_to_platform._seatalk_original = original  # type: ignore[attr-defined]
+    send_message_tool._send_to_platform = _patched_send_to_platform
+
+
+async def _seatalk_send_to_platform(
+    platform: Any,
+    chat_id: str,
+    message: str,
+    *,
+    thread_id: str | None = None,
+    media_files: list[tuple[str, bool]] | None = None,
+) -> dict[str, Any]:
+    """SeaTalk-specific send path that preserves thread and native media."""
+    try:
+        from gateway.run import _gateway_runner_ref
+        from gateway.platforms.base import BasePlatformAdapter
+        from gateway.platform_registry import platform_registry
+    except Exception as exc:  # noqa: BLE001
+        return {"error": f"SeaTalk send unavailable: {exc}"}
+
+    runner = _gateway_runner_ref()
+    if not runner:
+        return {"error": "No gateway runner. Is the gateway running?"}
+
+    runtime_adapter = runner.adapters.get(platform)
+    if runtime_adapter is None:
+        return {"error": "No live SeaTalk adapter. Is the gateway running with SeaTalk connected?"}
+
+    metadata = {"thread_id": thread_id} if thread_id else None
+    results: list[Any] = []
+    if message:
+        entry = platform_registry.get(SEATALK_PLATFORM)
+        max_len = entry.max_message_length if entry and entry.max_message_length else MAX_MESSAGE_LENGTH
+        for chunk in BasePlatformAdapter.truncate_message(message, max_len):
+            result = await runtime_adapter.send(chat_id=chat_id, content=chunk, metadata=metadata)
+            if not getattr(result, "success", False):
+                return {"error": f"SeaTalk send failed: {getattr(result, 'error', 'unknown')}"}
+            results.append(result)
+
+    for media_path, _is_voice in media_files or []:
+        ext = Path(media_path).suffix.lower()
+        if ext in {".jpg", ".jpeg", ".png", ".webp", ".gif"}:
+            result = await runtime_adapter.send_image_file(chat_id, media_path, caption="", metadata=metadata)
+        else:
+            result = await runtime_adapter.send_document(chat_id, media_path, caption="", metadata=metadata)
+        if not getattr(result, "success", False):
+            return {"error": f"SeaTalk media send failed: {getattr(result, 'error', 'unknown')}"}
+        results.append(result)
+
+    message_id = getattr(results[-1], "message_id", None) if results else None
+    return {"success": True, "message_id": message_id}
+
+
+def _patch_home_channel() -> None:
+    """Read SeaTalk home channel env values from GatewayConfig fallback path."""
+    try:
+        from gateway.config import GatewayConfig, HomeChannel
+    except Exception:
+        return
+
+    original = GatewayConfig.get_home_channel
+    if getattr(original, "_seatalk_patched", False):
+        return
+
+    def _patched_get_home_channel(self, platform):
+        result = original(self, platform)
+        if result is not None:
+            return result
+        if _platform_value(platform) != SEATALK_PLATFORM:
+            return None
+        home = os.getenv("SEATALK_HOME_CHANNEL", "").strip()
+        if not home:
+            return None
+        return HomeChannel(
+            platform=platform,
+            chat_id=home,
+            name=os.getenv("SEATALK_HOME_CHANNEL_NAME", "SeaTalk Home"),
+            thread_id=os.getenv("SEATALK_HOME_CHANNEL_THREAD_ID", "").strip() or None,
+        )
+
+    _patched_get_home_channel._seatalk_patched = True  # type: ignore[attr-defined]
+    _patched_get_home_channel._seatalk_original = original  # type: ignore[attr-defined]
+    GatewayConfig.get_home_channel = _patched_get_home_channel
+
+
+def _platform_value(platform: Any) -> str:
+    return str(getattr(platform, "value", platform)).lower()
+
+
 def register(ctx: Any) -> None:
     """Plugin entry point called by the Hermes plugin loader."""
+    _patch_cron_scheduler()
+    _patch_send_message_tool()
+    _patch_send_to_platform()
+    _patch_home_channel()
+
     if getattr(ctx, "_seatalk_platform_registered", False):
         return
     ctx.register_platform(
