@@ -33,7 +33,7 @@ related_test_plan: ../test/tp_hermes-seatalk-plugin_zh.md
 | W-06 | 入站标准化与调度 | W-04, W-05 | AFK | 去重、debounce、quoted message、附件下载、session 映射 | webhook/relay 进入同一 Hermes 执行链路 |
 | W-07 | 鉴权与群过滤 | W-04, W-05, W-06 | AFK | `user_id/user_id_alt` 设置、群白名单、拒绝日志 | 未授权用户不会进入 agent；群过滤不误当用户授权 |
 | W-08 | Hermes 兼容性补丁 | W-01, W-03, W-06 | AFK | `send_message`、`send_to_platform`、home channel、cron target | 补丁可重复注册；不会破坏内置平台；home channel 支持 thread id |
-| W-09 | 配置、安装与运维文档 | W-01 到 W-08 | AFK | README、env 示例、运行说明、状态排查 | 使用者可按文档安装、启用、重启并验证 plugin |
+| W-09 | 配置、安装与运维文档 | W-01 到 W-08 | AFK | README、env 示例、setup wizard、运行说明、状态排查 | 使用者可按文档安装、启用、TUI 配置、重启并验证 plugin |
 | W-10 | 自动化测试集 | W-01 到 W-08 | AFK | pytest 单测、集成测试、mock OpenAPI/relay/webhook | 核心路径在 CI 可离线验证 |
 | W-11 | 真实 SeaTalk 联调验证 | W-09, W-10 | HITL | Bot App、真实用户、真实群、真实文件消息 | 完成端到端收发、鉴权拒绝、relay/webhook 至少一种生产路径验证 |
 
@@ -60,10 +60,11 @@ W-11 depends on W-09 and W-10
 
 交付物：
 
-- plugin repo 根目录下的 Python 模块文件，例如 `adapter.py`、`client.py`、`dispatcher.py`、`__init__.py`。
+- plugin repo 根目录下的 loader shim，例如 `adapter.py`、`__init__.py`。
+- `hermes_seatalk/` Python package，例如 `adapter.py`、`client.py`、`dispatcher.py`。
 - plugin manifest，例如 `plugin.yaml` 或 Hermes 当前 loader 要求的等价文件。
 - `pyproject.toml` 或等价依赖声明。
-- 最小导出入口：`adapter.py` 中的 `register(ctx)`。
+- 最小导出入口：root `adapter.py` re-export `hermes_seatalk.adapter.register(ctx)`。
 - `env.example`，只包含 SeaTalk plugin 必需配置。
 
 完成条件：
@@ -142,7 +143,7 @@ W-11 depends on W-09 and W-10
 
 - `SeaTalkAdapter.send(chat_id, content, metadata=None)`。
 - `send_image_file()`、`send_document()` 等 native media 发送方法。
-- `coalescer.py` 出站文本合并器。
+- `hermes_seatalk/coalescer.py` 出站文本合并器。
 - Hermes target 到 SeaTalk 目标的解析。
 - 文本分段、native image/file payload、图片/文件消息转换。
 - 发送失败时的异常和 retry policy。
@@ -308,6 +309,7 @@ W-11 depends on W-09 and W-10
 - README。
 - `env.example`。
 - 安装说明。
+- Hermes gateway setup / TUI 引导说明。
 - Hermes enable/restart 说明。
 - webhook/relay 二选一配置说明。
 - 状态排查说明。
@@ -315,6 +317,9 @@ W-11 depends on W-09 and W-10
 完成条件：
 
 - 文档明确 plugin enable 只是写入 Hermes 配置，实际 `register(ctx)` 在 Hermes 进程启动或 plugin discovery 时运行。
+- 文档明确用户安装的 plugin 需要先 `hermes plugins enable seatalk-platform`，之后才会出现在 `hermes setup` / `hermes gateway setup` 的 messaging platform TUI 中。
+- setup wizard 先询问通用 credentials，再选择 `relay` 或 `webhook`。
+- setup wizard 只询问并校验当前 mode 对应的额外字段；relay 只要求 `SEATALK_RELAY_URL`，webhook 不要求 relay URL。
 - 文档明确修改配置后需要重启相关 Hermes 进程。
 - 文档说明 relay 模式和 webhook 模式的配置差异。
 - 文档说明 email allowlist 与群白名单的不同边界。

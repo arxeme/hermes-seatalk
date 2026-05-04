@@ -1,0 +1,13 @@
+name: seatalk-platform
+kind: platform
+version: 1.0.0
+description: >
+  SeaTalk messaging platform adapter for Hermes Agent.
+  Supports DM and group/thread messages via webhook or relay gateway.
+  Connects to SeaTalk Open Platform using a Bot App.
+author: AI Agent Team
+requires_env:
+  - SEATALK_APP_ID
+  - SEATALK_APP_SECRET
+  - SEATALK_SIGNING_SECRET
+  - SEATALK_MODE

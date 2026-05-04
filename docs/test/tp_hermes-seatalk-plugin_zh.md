@@ -184,9 +184,12 @@ tests/
 | --- | --- |
 | T-09-01 README 命令可执行 | README 中本地安装和启用命令在测试环境可运行 |
 | T-09-02 enable/restart 说明准确 | 文档明确 enable 只写配置，register 在进程启动或 discovery 时执行 |
-| T-09-03 双模式配置清晰 | relay 和 webhook 的必填环境变量不混淆 |
-| T-09-04 鉴权边界清晰 | 文档区分 email allowlist、employee fallback 和群白名单 |
-| T-09-05 排查路径可用 | status、日志、health 文件的排查说明能定位常见问题 |
+| T-09-03 TUI 出现条件 | 用户安装 plugin 后，只有执行 `hermes plugins enable seatalk-platform`，SeaTalk 才会出现在 `hermes setup` / `hermes gateway setup` 的 messaging platform TUI 中 |
+| T-09-04 setup wizard 顺序 | wizard 先询问 app id/app secret/signing secret，再选择 `relay` 或 `webhook` |
+| T-09-05 relay 互斥配置 | 选择 relay 时只额外要求 `SEATALK_RELAY_URL`，不要求 webhook host/port/path |
+| T-09-06 webhook 互斥配置 | 选择 webhook 时不要求 `SEATALK_RELAY_URL`，host/port/path 使用默认值或用户输入 |
+| T-09-07 鉴权边界清晰 | 文档区分 email allowlist、employee fallback 和群白名单 |
+| T-09-08 排查路径可用 | status、日志、health 文件的排查说明能定位常见问题 |
 
 ### T-10 自动化测试集自身质量
 

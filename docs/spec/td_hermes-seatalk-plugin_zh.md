@@ -94,19 +94,29 @@ flowchart LR
 ```
 hermes-seatalk/          ← git repo root = plugin root (~/.hermes/plugins/seatalk/)
 ├── plugin.yaml          # Plugin manifest（hermes-agent 加载入口）
-├── __init__.py
-├── adapter.py           # SeaTalkAdapter + register(ctx) + monkey-patches
-├── client.py            # SeaTalk OpenAPI client + token 管理
-├── relay.py             # WebSocket relay client
-├── webhook.py           # aiohttp webhook HTTP server
-├── dispatcher.py        # Event dedup + debounce + dispatch
-├── coalescer.py         # Outbound coalescer（per-chat buffer）
-├── requirements.txt     # 依赖声明（aiohttp>=3.9）
+├── pyproject.toml       # Python package metadata / local test config
+├── __init__.py          # root package shim，导出 register
+├── adapter.py           # root entry shim，供 Hermes loader import adapter.register
+├── hermes_seatalk/      # 实际 Python package
+│   ├── __init__.py
+│   ├── adapter.py       # SeaTalkAdapter + register(ctx) + monkey-patches
+│   ├── client.py        # SeaTalk OpenAPI client + token 管理
+│   ├── relay.py         # WebSocket relay client
+│   ├── webhook.py       # aiohttp webhook HTTP server
+│   ├── dispatcher.py    # Event dedup + debounce + dispatch
+│   ├── targets.py       # SeaTalk target parse/format
+│   └── coalescer.py     # Outbound coalescer（per-chat buffer）
+├── requirements.txt     # 兼容直接安装依赖（aiohttp>=3.9）
 ├── docs/
 │   └── spec/
 │       └── td_hermes-seatalk-plugin_zh.md   ← 本文档
 └── README.md
 ```
+
+除 root `adapter.py` / `__init__.py` 作为 Hermes plugin loader 兼容入口外，
+业务源码统一放在 `hermes_seatalk/` 包内。root `adapter.py` 只做 re-export，
+不承载运行时逻辑，避免 repo 名 `hermes-seatalk` 不能作为 Python package 名导致的
+import 混乱。
 
 `requirements.txt` 内容：
 
@@ -139,7 +149,8 @@ requires_env:
 
 ## 3. register() 与 monkey-patch
 
-`adapter.py` 的 `register(ctx)` 是 hermes-agent plugin loader 调用的唯一入口。
+root `adapter.py` 的 `register(ctx)` 是 hermes-agent plugin loader 调用的唯一入口；
+实际实现位于 `hermes_seatalk/adapter.py`。
 除注册 `PlatformEntry` 外，它完成四处 monkey-patch，使 cron delivery、
 send_message target 解析、thread/media 路由和 home channel 解析无需 upstream 改动即可支持 SeaTalk。
 
@@ -454,6 +465,38 @@ def _is_seatalk_connected(cfg) -> bool:
 `Platform("seatalk")` 通过 `Platform._missing_()` 动态创建 enum 成员，
 无需预先在 `gateway/config.py` 中声明。
 
+### 3.6 交互式 setup wizard
+
+`_seatalk_setup_wizard()` 由 `PlatformEntry.setup_fn` 暴露给 Hermes。
+用户安装的 plugin 必须先完成 `git clone` 和
+`hermes plugins enable seatalk-platform`，之后才会出现在
+`hermes setup` / `hermes gateway setup` 的 messaging platform TUI 中。
+
+setup wizard 不负责安装或启用 plugin，只负责写入 SeaTalk runtime 配置。
+交互顺序：
+
+1. 读取现有 env/config 作为默认值。
+2. 询问通用 credentials：`SEATALK_APP_ID`、`SEATALK_APP_SECRET`、
+   `SEATALK_SIGNING_SECRET`。
+3. 询问 `SEATALK_MODE`，只能选择 `relay` 或 `webhook`。
+4. 若选择 `relay`，只要求输入 `SEATALK_RELAY_URL`，不要求
+   `SEATALK_WEBHOOK_HOST/PORT/PATH`。
+5. 若选择 `webhook`，只询问 webhook host/port/path，均有默认值；
+   不要求 `SEATALK_RELAY_URL`。wizard 需要提示用户把 SeaTalk Bot App 的
+   callback URL 指向该路径，并说明 TLS 可由外部反代终止。
+6. 询问可选项：home channel/thread、用户 allowlist、group allowlist、
+   group mention 策略。
+7. 写入 `~/.hermes/.env` 或 Hermes 约定的 gateway 配置位置，并提示重启
+   hermes gateway 后生效。
+
+模式互斥规则：
+
+- `relay` 与 `webhook` 是二选一运行模式。
+- wizard、`check_seatalk_requirements()` 和 `_validate_seatalk_config()`
+  只要求当前 mode 对应的字段。
+- 切换 mode 时，旧 mode 的环境变量可以保留，但必须被当前 mode 的校验忽略；
+  文档和状态展示不得把未使用 mode 的字段显示为必填缺失。
+
 ---
 
 ## 4. 组件设计
@@ -652,6 +695,14 @@ WebSocket connect
 | `SEATALK_TEXT_CHUNK_LIMIT` | 否 | 出站文本分片长度，默认 4000 |
 | `SEATALK_OUTBOUND_COALESCING` | 否 | 出站合并开关，默认 `true` |
 
+配置互斥原则：
+
+- `SEATALK_MODE=relay` 时，`SEATALK_RELAY_URL` 是唯一额外必填项。
+- `SEATALK_MODE=webhook` 时，不要求 `SEATALK_RELAY_URL`；
+  `SEATALK_WEBHOOK_HOST/PORT/PATH` 使用默认值即可启动。
+- 两种模式共享 credentials、home channel、allowlist、group 过滤等通用配置。
+- 若环境中残留另一种模式的字段，当前模式的校验和启动逻辑必须忽略它。
+
 ---
 
 ## 6. 安装与分发
@@ -816,15 +867,15 @@ cron scheduler 通过 `runtime_adapter.send(chat_id, text, metadata={"thread_id"
 
 ## 12. 实施任务清单
 
-1. 仓库初始化（`plugin.yaml`、`__init__.py`、`requirements.txt`、`README.md`）
-2. `client.py`：token + `send_single_chat` + `send_group_chat` + email lookup
-3. `relay.py`：connect → auth → event → ping/pong → reconnect 状态机
-4. `dispatcher.py`：dedup + debounce + DM/group event → `MessageEvent`
-5. `adapter.py`：`connect(relay/webhook)` + `send(content)` + `send_typing` + `register(ctx)` + 四个 monkey-patch
-6. `webhook.py`：signature verify + event_verification + async dispatch
+1. 仓库初始化（`plugin.yaml`、root `adapter.py` / `__init__.py` shim、`requirements.txt`、`README.md`）
+2. `hermes_seatalk/client.py`：token + `send_single_chat` + `send_group_chat` + email lookup
+3. `hermes_seatalk/relay.py`：connect → auth → event → ping/pong → reconnect 状态机
+4. `hermes_seatalk/dispatcher.py`：dedup + debounce + DM/group event → `MessageEvent`
+5. `hermes_seatalk/adapter.py`：`connect(relay/webhook)` + `send(content)` + `send_typing` + `register(ctx)` + 四个 monkey-patch
+6. `hermes_seatalk/webhook.py`：signature verify + event_verification + async dispatch
 7. 入站媒体下载 + cache（deprecated TD §3.6 规则）
 8. `send_image` / `send_image_file` / `send_document` → native base64 payload
-9. `coalescer.py`：per-chat buffer
+9. `hermes_seatalk/coalescer.py`：per-chat buffer
 10. `setup_fn`、`is_connected` callback、status 展示
 11. 单元测试补全
 12. `.env.example`
