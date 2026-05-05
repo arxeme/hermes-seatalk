@@ -12,22 +12,22 @@ README_INLINE = " ".join(README.split())
 
 
 def test_t09_01_readme_commands_are_copy_pasteable():
-    assert "git clone https://github.com/arxeme/hermes-seatalk.git ~/.hermes/plugins/seatalk" in README
-    assert "hermes plugins enable seatalk-platform" in README
+    assert "hermes plugins install arxeme/hermes-seatalk --enable && hermes gateway restart" in README
     assert "hermes gateway setup" in README
     assert "hermes gateway restart" in README
     assert "PYTHONDONTWRITEBYTECODE=1 uv run --directory ../../hermes-agent pytest" in README
 
 
 def test_t09_02_enable_restart_semantics_documented():
-    assert "only records the plugin as enabled" in README
+    assert "clones the plugin into the user plugin directory" in README_INLINE
+    assert "records `seatalk-platform` as enabled" in README
     assert "`register(ctx)` runs when a Hermes process starts" in README_INLINE
-    assert "Restart the gateway after enabling the plugin or changing SeaTalk configuration" in README_INLINE
+    assert "Restart the gateway after changing SeaTalk configuration" in README_INLINE
 
 
 def test_t09_03_tui_requires_plugin_enable():
     assert "appear in `hermes setup` / `hermes gateway setup` only after" in README_INLINE
-    assert "hermes plugins enable seatalk-platform" in README
+    assert "hermes plugins install arxeme/hermes-seatalk --enable" in README
     assert "does not clone, install, or enable the plugin" in README_INLINE
 
 

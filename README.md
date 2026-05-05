@@ -26,17 +26,17 @@ hermes-seatalk/
 
 ## Install
 
-Install the plugin under the user plugin directory and enable its platform id:
+Install the plugin from GitHub, enable its platform id, and restart the gateway:
 
 ```bash
-git clone https://github.com/arxeme/hermes-seatalk.git ~/.hermes/plugins/seatalk
-hermes plugins enable seatalk-platform
+hermes plugins install arxeme/hermes-seatalk --enable && hermes gateway restart
 ```
 
-`hermes plugins enable seatalk-platform` only records the plugin as enabled in
-Hermes configuration. The plugin code is loaded and `register(ctx)` runs when a
-Hermes process starts or when Hermes performs plugin discovery. Restart the
-gateway after enabling the plugin or changing SeaTalk configuration:
+`hermes plugins install arxeme/hermes-seatalk --enable` clones the plugin into
+the user plugin directory and records `seatalk-platform` as enabled in Hermes
+configuration. The plugin code is loaded and `register(ctx)` runs when a Hermes
+process starts or when Hermes performs plugin discovery. Restart the gateway
+after changing SeaTalk configuration:
 
 ```bash
 hermes gateway restart
