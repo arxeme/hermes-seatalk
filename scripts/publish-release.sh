@@ -1,31 +1,27 @@
 #!/usr/bin/env bash
-# Publish minimum runtime plugin files from main HEAD to the release branch.
+# Publish minimum runtime plugin files from main HEAD to the publish branch.
 # Requires Git >= 2.15 (git worktree add --orphan).
 #
 # Usage:
 #   ./scripts/publish-release.sh [<version-tag>]
 #
 # Examples:
-#   ./scripts/publish-release.sh           # update release branch only
-#   ./scripts/publish-release.sh v1.2.0    # update release branch + create annotated tag
+#   ./scripts/publish-release.sh           # update publish branch only
+#   ./scripts/publish-release.sh v1.2.0    # update publish branch + create annotated tag
 set -euo pipefail
 
-# Files included in the release branch (no docs/, tests/, scripts/).
-RELEASE_FILES=(
+# Paths included in the publish branch (no docs/, tests/, scripts/, deploy/).
+RELEASE_PATHS=(
     plugin.yaml
     __init__.py
     adapter.py
-    client.py
-    relay.py
-    webhook.py
-    dispatcher.py
-    coalescer.py
+    hermes_seatalk
     requirements.txt
     env.example
     README.md
 )
 
-RELEASE_BRANCH="release"
+RELEASE_BRANCH="publish"
 SOURCE_REF="main"
 VERSION="${1:-}"
 
@@ -57,16 +53,16 @@ else
     git -C "$REPO_ROOT" worktree add -q --orphan -b "$RELEASE_BRANCH" "$TMP_WORKTREE"
 fi
 
-# Export each release file from SOURCE_REF HEAD.
+# Export each release path from SOURCE_REF HEAD.
 FOUND=0
-for f in "${RELEASE_FILES[@]}"; do
-    if git -C "$REPO_ROOT" cat-file -e "${SOURCE_REF}:${f}" 2>/dev/null; then
-        mkdir -p "$(dirname "$TMP_WORKTREE/$f")"
-        git -C "$REPO_ROOT" show "${SOURCE_REF}:${f}" > "$TMP_WORKTREE/$f"
-        echo "  + $f"
+EXPORT_PATHS=()
+for path in "${RELEASE_PATHS[@]}"; do
+    if git -C "$REPO_ROOT" cat-file -e "${SOURCE_REF}:${path}" 2>/dev/null; then
+        EXPORT_PATHS+=("$path")
+        echo "  + $path"
         FOUND=$((FOUND + 1))
     else
-        echo "  - $f  (not in $SOURCE_REF, skipped)"
+        echo "  - $path  (not in $SOURCE_REF, skipped)"
     fi
 done
 
@@ -77,15 +73,16 @@ if [[ "$FOUND" -eq 0 ]]; then
 fi
 
 echo ""
+git -C "$REPO_ROOT" archive "$SOURCE_REF" "${EXPORT_PATHS[@]}" | tar -x -C "$TMP_WORKTREE"
 git -C "$TMP_WORKTREE" add -A
 
 # Commit only when content actually changed.
 if git -C "$TMP_WORKTREE" diff --cached --quiet 2>/dev/null; then
     RELEASE_COMMIT="$(git -C "$TMP_WORKTREE" rev-parse HEAD)"
-    echo "No changes — release branch is already up to date."
+    echo "No changes — publish branch is already up to date."
     echo "HEAD : $RELEASE_COMMIT"
 else
-    COMMIT_MSG="release: publish runtime plugin files"
+    COMMIT_MSG="publish: publish runtime plugin files"
     [[ -n "$VERSION" ]] && COMMIT_MSG="$COMMIT_MSG ($VERSION)"
     git -C "$TMP_WORKTREE" commit -q -m "$COMMIT_MSG"
     RELEASE_COMMIT="$(git -C "$TMP_WORKTREE" rev-parse HEAD)"
@@ -104,4 +101,6 @@ fi
 echo ""
 echo "Push with:"
 echo "  git push origin $RELEASE_BRANCH"
-[[ -n "$VERSION" ]] && echo "  git push origin refs/tags/$VERSION"
+if [[ -n "$VERSION" ]]; then
+    echo "  git push origin refs/tags/$VERSION"
+fi
