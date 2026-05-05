@@ -1,6 +1,15 @@
-# Hermes SeaTalk Plugin 真实联调 Runbook
+---
+标题: Hermes SeaTalk Plugin 真实联调 Runbook
+状态: draft
+更新日期: 2026-05-05
+参考材料:
+  - Hermes SeaTalk Plugin 测试计划 (./tp_hermes-seatalk-plugin_zh.md)
+  - Hermes SeaTalk Plugin 测试报告 (./tr_hermes-seatalk-plugin_zh.md)
+  - Hermes SeaTalk Plugin 真实联调测试报告 (./tr_hermes-seatalk-plugin_e2e_zh.md)
+文档摘要: 提供真实 SeaTalk Bot App、真实用户、真实群和 relay/webhook 链路的人工联调步骤。
+---
 
-更新时间：2026-05-04
+# Hermes SeaTalk Plugin 真实联调 Runbook
 
 ## 1. 目的
 
@@ -163,19 +172,17 @@ Webhook 模式：
 - 恢复后可继续收发。
 - `is_connected` 不被 runtime health 语义污染。
 
-## 5. 结果记录表
+## 5. 证据采集要求
 
-| 用例 | 模式 | 结果 | 证据摘要 | 问题链接 |
-| --- | --- | --- | --- | --- |
-| E-01 Bot App 配置 | PENDING | PENDING | PENDING | PENDING |
-| E-02 用户私聊入站 | PENDING | PENDING | PENDING | PENDING |
-| E-03 群聊入站 | PENDING | PENDING | PENDING | PENDING |
-| E-04 出站工具调用 | PENDING | PENDING | PENDING | PENDING |
-| E-05 Home Channel | PENDING | PENDING | PENDING | PENDING |
-| E-06 未授权用户 | PENDING | PENDING | PENDING | PENDING |
-| E-07 未授权群 | PENDING | PENDING | PENDING | PENDING |
-| E-08 文件或图片 | PENDING | PENDING | PENDING | PENDING |
-| E-09 Runtime Health | PENDING | PENDING | PENDING | PENDING |
+每个 E2E 用例执行后，将结果回填到 `tr_hermes-seatalk-plugin_e2e_zh.md`，runbook 不记录最终测试状态。
+
+| 证据类型 | 要求 |
+| --- | --- |
+| Hermes status | 记录 `hermes gateway status` 中 SeaTalk configured/runtime health 的脱敏摘要 |
+| Hermes 日志 | 记录 gateway、agent、relay/webhook 相关日志片段，不包含 secret |
+| SeaTalk 现象 | 记录消息收发、拒绝、附件、runtime health 恢复等客户端侧现象 |
+| 配置摘要 | 只记录配置项是否存在、模式、目标类别，不记录 secret 明文 |
+| 问题链接 | 发现缺陷时记录 issue 或后续修复任务链接 |
 
 ## 6. 问题回流
 
@@ -187,4 +194,4 @@ Webhook 模式：
 | WBS 范围或拆分问题 | `docs/spec/wbs_hermes-seatalk-plugin_zh.md` |
 | TP 缺失用例 | `docs/test/tp_hermes-seatalk-plugin_zh.md` |
 | 自动化可覆盖的缺陷 | `tests/` |
-| 仅真实环境可复现的问题 | 本 runbook 的结果记录表和独立 issue |
+| 仅真实环境可复现的问题 | `tr_hermes-seatalk-plugin_e2e_zh.md` 和独立 issue |

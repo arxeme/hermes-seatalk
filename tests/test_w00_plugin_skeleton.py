@@ -20,10 +20,8 @@ def test_t00_01_manifest_can_be_parsed():
     assert "version:" in text
     assert "requires_env:" in text
     for name in (
-        "SEATALK_APP_ID",
         "SEATALK_APP_SECRET",
         "SEATALK_SIGNING_SECRET",
-        "SEATALK_MODE",
     ):
         assert f"  - {name}" in text
 
@@ -69,14 +67,13 @@ def test_t00_05_env_example_is_complete_and_placeholder_only():
     text = (ROOT / "env.example").read_text()
 
     for name in (
-        "SEATALK_APP_ID",
         "SEATALK_APP_SECRET",
         "SEATALK_SIGNING_SECRET",
-        "SEATALK_MODE",
-        "SEATALK_RELAY_URL",
     ):
         assert name in text
 
-    assert "your_app_id" in text
     assert "your_app_secret" in text
     assert "your_signing_secret" in text
+    assert "platforms:" in text
+    assert "app_id: your_app_id" in text
+    assert "relay_url: wss://relay.example.com/ws" in text

@@ -1,6 +1,17 @@
-# TR: Hermes SeaTalk Plugin
+---
+标题: Hermes SeaTalk Plugin 测试报告
+状态: draft
+更新日期: 2026-05-05
+参考材料:
+  - Hermes SeaTalk Plugin 技术设计 (../spec/td_hermes-seatalk-plugin_zh.md)
+  - Hermes SeaTalk Plugin 工作分解结构 (../spec/wbs_hermes-seatalk-plugin_zh.md)
+  - Hermes SeaTalk Plugin 测试计划 (./tp_hermes-seatalk-plugin_zh.md)
+  - Hermes SeaTalk Plugin 真实联调 Runbook (./e2e_hermes-seatalk-plugin_runbook_zh.md)
+  - Hermes SeaTalk Plugin 真实联调测试报告 (./tr_hermes-seatalk-plugin_e2e_zh.md)
+文档摘要: 记录 Hermes SeaTalk Plugin 各 checkpoint 的自动化测试结果、覆盖率和待联调项。
+---
 
-更新时间：2026-05-04
+# TR: Hermes SeaTalk Plugin
 
 ## 1. 当前结论
 

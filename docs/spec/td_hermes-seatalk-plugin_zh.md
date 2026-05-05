@@ -1,20 +1,21 @@
 ---
+标题: Hermes SeaTalk Platform Plugin 技术设计
+状态: draft
+更新日期: 2026-05-05
 适用范围: hermes-seatalk (plugin 版)
+作者: AI Agent Team
 参考材料:
-  - "[td_hermes-seatalk_zh.md](../../../hermes-seatalk(deprecated)/docs/spec/td_hermes-seatalk_zh.md)"
-  - "[platform_registry.py](../../../../hermes-agent/gateway/platform_registry.py)"
-  - "[plugins/platforms/irc/adapter.py](../../../../hermes-agent/plugins/platforms/irc/adapter.py)"
-  - "[openclaw-seatalk/src/](../../../openclaw-seatalk/src/)"
-  - "[seatalk-relay/index.ts](../../../seatalk-relay/index.ts)"
-  - "https://github.com/arxeme/hermes-seatalk"
+  - 旧版 Hermes SeaTalk 技术设计 (../../../hermes-seatalk(deprecated)/docs/spec/td_hermes-seatalk_zh.md)
+  - Hermes platform registry (../../../../hermes-agent/gateway/platform_registry.py)
+  - Hermes IRC plugin adapter (../../../../hermes-agent/plugins/platforms/irc/adapter.py)
+  - OpenClaw SeaTalk source (../../../openclaw-seatalk/src/)
+  - SeaTalk relay source (../../../seatalk-relay/index.ts)
+  - Hermes SeaTalk plugin repository (https://github.com/arxeme/hermes-seatalk)
 文档摘要: >
   定义以 hermes-agent 外部 platform plugin 形式接入 SeaTalk messaging platform 的技术方案。
   所有 SeaTalk 逻辑封装在独立仓库 https://github.com/arxeme/hermes-seatalk 中，
   通过 PlatformRegistry 插件注册机制接入，不修改 hermes-agent 任何源文件，
   所需核心改动通过 register() 内 monkey-patch 完成。
-状态: Draft
-作者: AI Agent Team
-日期: 2026-05-04
 ---
 
 # Hermes SeaTalk Platform Plugin：技术设计

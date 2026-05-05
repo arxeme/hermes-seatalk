@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import mimetypes
-import os
 import time
 from collections import OrderedDict
 from dataclasses import dataclass, field
@@ -122,6 +121,11 @@ class SeaTalkEventDispatcher:
         app_id: str,
         emit: Any | None = None,
         media_allow_hosts: set[str] | None = None,
+        dm_policy: str = "allowlist",
+        allowlist: set[str] | None = None,
+        group_policy: str = "disabled",
+        group_allowlist: set[str] | None = None,
+        group_sender_allowlist: set[str] | None = None,
         dedup_ttl_seconds: float = DEFAULT_DEDUP_TTL_SECONDS,
         dedup_max_size: int = DEFAULT_DEDUP_MAX_SIZE,
         debounce_idle_seconds: float = DEFAULT_DEBOUNCE_IDLE_SECONDS,
@@ -144,7 +148,19 @@ class SeaTalkEventDispatcher:
         self._now = now_fn
         self._seen: OrderedDict[str, float] = OrderedDict()
         self._buffers: dict[str, _DebounceBuffer] = {}
-        self._group_allowlist: set[str] = _csv_env("SEATALK_GROUP_ALLOWED_USERS")
+        self._dm_policy = dm_policy.strip().lower() or "allowlist"
+        self._allowlist: set[str] = {
+            item.strip().lower() for item in (allowlist or set()) if item and item.strip()
+        }
+        self._group_policy = group_policy.strip().lower() or "disabled"
+        self._group_allowlist: set[str] = {
+            item.strip() for item in (group_allowlist or set()) if item and item.strip()
+        }
+        self._group_sender_allowlist: set[str] = {
+            item.strip().lower()
+            for item in (group_sender_allowlist or set())
+            if item and item.strip()
+        }
 
     async def dispatch(self, payload: dict[str, Any], ingress: str) -> None:
         """Normalize and schedule one SeaTalk event from webhook or relay."""
@@ -233,6 +249,9 @@ class SeaTalkEventDispatcher:
             return None
 
         email = _normalize_email(event.get("email"))
+        if not self._dm_sender_allowed(employee_code, email):
+            logger.warning("SeaTalk DM rejected: reason=sender_not_allowed")
+            return None
         message_id = _str_or_none(message.get("message_id")) or _str_or_none(payload.get("event_id"))
         thread_id = _str_or_none(message.get("thread_id"))
         text, media_urls, media_types, media_errors = await self._resolve_message_content(message)
@@ -289,7 +308,10 @@ class SeaTalkEventDispatcher:
             return None
 
         chat_id = f"group/{group_id}"
-        if self._group_allowlist and chat_id not in self._group_allowlist:
+        if self._group_policy == "disabled":
+            logger.warning("SeaTalk group rejected: channel=%s reason=groups_disabled", chat_id)
+            return None
+        if self._group_policy == "allowlist" and group_id not in self._group_allowlist:
             logger.warning("SeaTalk group rejected: channel=%s reason=group_not_allowed", chat_id)
             return None
 
@@ -298,6 +320,13 @@ class SeaTalkEventDispatcher:
             logger.info("SeaTalk malformed group sender dropped")
             return None
         email = _normalize_email(sender.get("email"))
+        if self._group_sender_allowlist and not _sender_in_allowlist(
+            employee_code,
+            email,
+            self._group_sender_allowlist,
+        ):
+            logger.warning("SeaTalk group rejected: channel=%s reason=sender_not_allowed", chat_id)
+            return None
         message_id = _str_or_none(message.get("message_id")) or _str_or_none(payload.get("event_id"))
         thread_id = _str_or_none(message.get("thread_id"))
         text, media_urls, media_types, media_errors = await self._resolve_message_content(message)
@@ -475,6 +504,13 @@ class SeaTalkEventDispatcher:
             source.thread_id or "",
         ])
 
+    def _dm_sender_allowed(self, employee_code: str, email: str | None) -> bool:
+        if self._dm_policy == "open":
+            return True
+        if self._dm_policy == "pairing":
+            return True
+        return _sender_in_allowlist(employee_code, email, self._allowlist)
+
 
 def _seatalk_platform() -> Any:
     try:
@@ -523,12 +559,17 @@ def _user_name(employee_code: str, email: str | None) -> str:
     return f"{employee_code} ({email})" if email else employee_code
 
 
+def _sender_in_allowlist(employee_code: str, email: str | None, allowlist: set[str]) -> bool:
+    if "*" in allowlist:
+        return True
+    candidates = {employee_code, employee_code.lower()}
+    if email:
+        candidates.add(email.lower())
+    return bool(candidates & allowlist)
+
+
 def _str_or_none(value: Any) -> str | None:
     if value is None:
         return None
     text = str(value).strip()
     return text or None
-
-
-def _csv_env(name: str) -> set[str]:
-    return {item.strip() for item in os.getenv(name, "").split(",") if item.strip()}

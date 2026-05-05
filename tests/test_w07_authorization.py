@@ -42,8 +42,7 @@ def _register_seatalk_auth_entry():
         label="SeaTalk",
         adapter_factory=lambda cfg: None,
         check_fn=lambda: True,
-        allowed_users_env="SEATALK_ALLOWED_USERS",
-        allow_all_env="SEATALK_ALLOW_ALL_USERS",
+        allowed_users_env="HERMES_SEATALK_ALLOWED_USERS",
     ))
 
 
@@ -102,12 +101,25 @@ def _dm_payload(email="Alice@Example.com"):
     }
 
 
-async def _dispatch(payload):
+async def _dispatch(
+    payload,
+    *,
+    dm_policy="open",
+    allowlist=None,
+    group_policy="open",
+    group_allowlist=None,
+    group_sender_allowlist=None,
+):
     fake_adapter = FakeAdapter()
     dispatcher = SeaTalkEventDispatcher(
         adapter=fake_adapter,
         client=FakeClient(),
         app_id="app-id",
+        dm_policy=dm_policy,
+        allowlist=allowlist,
+        group_policy=group_policy,
+        group_allowlist=group_allowlist,
+        group_sender_allowlist=group_sender_allowlist,
         debounce_idle_seconds=0,
         debounce_max_seconds=0,
     )
@@ -117,15 +129,13 @@ async def _dispatch(payload):
 
 @pytest.mark.asyncio
 async def test_t07_01_email_priority(monkeypatch):
-    monkeypatch.delenv("SEATALK_GROUP_ALLOWED_USERS", raising=False)
     events = await _dispatch(_dm_payload(email="Alice@Example.com"))
 
     source = events[0].source
     assert source.user_id == "alice@example.com"
     assert source.user_id_alt == "EmpABC"
 
-    monkeypatch.setenv("SEATALK_ALLOWED_USERS", "alice@example.com")
-    monkeypatch.delenv("SEATALK_ALLOW_ALL_USERS", raising=False)
+    monkeypatch.setenv("HERMES_SEATALK_ALLOWED_USERS", "alice@example.com")
     monkeypatch.delenv("GATEWAY_ALLOWED_USERS", raising=False)
     monkeypatch.delenv("GATEWAY_ALLOW_ALL_USERS", raising=False)
     assert _gateway_auth(source) is True
@@ -133,23 +143,20 @@ async def test_t07_01_email_priority(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_t07_02_employee_fallback(monkeypatch):
-    monkeypatch.delenv("SEATALK_GROUP_ALLOWED_USERS", raising=False)
     events = await _dispatch(_dm_payload(email=None))
 
     source = events[0].source
     assert source.user_id == "EmpABC"
     assert source.user_id_alt == "EmpABC"
 
-    monkeypatch.setenv("SEATALK_ALLOWED_USERS", "EmpABC")
-    monkeypatch.delenv("SEATALK_ALLOW_ALL_USERS", raising=False)
+    monkeypatch.setenv("HERMES_SEATALK_ALLOWED_USERS", "EmpABC")
     monkeypatch.delenv("GATEWAY_ALLOWED_USERS", raising=False)
     monkeypatch.delenv("GATEWAY_ALLOW_ALL_USERS", raising=False)
     assert _gateway_auth(source) is True
 
 
 def test_t07_03_unauthorized_user_rejected(monkeypatch):
-    monkeypatch.setenv("SEATALK_ALLOWED_USERS", "bob@example.com")
-    monkeypatch.delenv("SEATALK_ALLOW_ALL_USERS", raising=False)
+    monkeypatch.setenv("HERMES_SEATALK_ALLOWED_USERS", "bob@example.com")
     monkeypatch.delenv("GATEWAY_ALLOWED_USERS", raising=False)
     monkeypatch.delenv("GATEWAY_ALLOW_ALL_USERS", raising=False)
 
@@ -158,9 +165,11 @@ def test_t07_03_unauthorized_user_rejected(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_t07_04_group_allowlist_pass(monkeypatch):
-    monkeypatch.setenv("SEATALK_GROUP_ALLOWED_USERS", "group/GroupABC")
-
-    events = await _dispatch(_group_payload(group_id="GroupABC"))
+    events = await _dispatch(
+        _group_payload(group_id="GroupABC"),
+        group_policy="allowlist",
+        group_allowlist={"GroupABC"},
+    )
 
     assert len(events) == 1
     assert events[0].source.chat_id == "group/GroupABC"
@@ -168,19 +177,24 @@ async def test_t07_04_group_allowlist_pass(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_t07_05_group_allowlist_reject(monkeypatch):
-    monkeypatch.setenv("SEATALK_GROUP_ALLOWED_USERS", "group/Allowed")
-
-    events = await _dispatch(_group_payload(group_id="Denied"))
+    events = await _dispatch(
+        _group_payload(group_id="Denied"),
+        group_policy="allowlist",
+        group_allowlist={"Allowed"},
+    )
 
     assert events == []
 
 
 @pytest.mark.asyncio
 async def test_t07_06_rejection_log_redacted(monkeypatch, caplog):
-    monkeypatch.setenv("SEATALK_GROUP_ALLOWED_USERS", "group/Allowed")
     monkeypatch.setenv("SEATALK_APP_SECRET", "super-secret-token")
 
-    events = await _dispatch(_group_payload(group_id="Denied"))
+    events = await _dispatch(
+        _group_payload(group_id="Denied"),
+        group_policy="allowlist",
+        group_allowlist={"Allowed"},
+    )
 
     assert events == []
     logs = caplog.text
@@ -188,3 +202,46 @@ async def test_t07_06_rejection_log_redacted(monkeypatch, caplog):
     assert "group_not_allowed" in logs
     assert "super-secret-token" not in logs
     assert "Alice@Example.com" not in logs
+
+
+@pytest.mark.asyncio
+async def test_t07_07_group_disabled_by_default(monkeypatch):
+    events = await _dispatch(
+        _group_payload(group_id="GroupABC"),
+        group_policy="disabled",
+    )
+
+    assert events == []
+
+
+@pytest.mark.asyncio
+async def test_t07_08_group_sender_allowlist_rejects_sender(monkeypatch):
+    events = await _dispatch(
+        _group_payload(group_id="GroupABC", email="charlie@example.com"),
+        group_policy="open",
+        group_sender_allowlist={"alice@example.com"},
+    )
+
+    assert events == []
+
+
+@pytest.mark.asyncio
+async def test_t07_09_group_sender_allowlist_accepts_email(monkeypatch):
+    events = await _dispatch(
+        _group_payload(group_id="GroupABC", email="Alice@Example.com"),
+        group_policy="open",
+        group_sender_allowlist={"alice@example.com"},
+    )
+
+    assert len(events) == 1
+
+
+@pytest.mark.asyncio
+async def test_t07_10_dm_allowlist_rejects_sender(monkeypatch):
+    events = await _dispatch(
+        _dm_payload(email="charlie@example.com"),
+        dm_policy="allowlist",
+        allowlist={"alice@example.com"},
+    )
+
+    assert events == []

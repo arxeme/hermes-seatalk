@@ -58,7 +58,6 @@ def _config(client, **extra):
 
 @pytest.mark.asyncio
 async def test_t03_01_home_channel_send(monkeypatch):
-    monkeypatch.delenv("SEATALK_HOME_CHANNEL", raising=False)
     client = FakeSeaTalkClient()
     seatalk = adapter.SeaTalkAdapter(_config(
         client,
@@ -77,7 +76,6 @@ async def test_t03_01_home_channel_send(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_t03_02_specified_channel_send(monkeypatch):
-    monkeypatch.delenv("SEATALK_HOME_CHANNEL", raising=False)
     client = FakeSeaTalkClient()
     seatalk = adapter.SeaTalkAdapter(_config(client, outbound_coalescing=False))
 
@@ -91,7 +89,6 @@ async def test_t03_02_specified_channel_send(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_t03_03_specified_thread_send(monkeypatch):
-    monkeypatch.delenv("SEATALK_HOME_CHANNEL", raising=False)
     client = FakeSeaTalkClient()
     seatalk = adapter.SeaTalkAdapter(_config(client, outbound_coalescing=False))
 
@@ -103,7 +100,6 @@ async def test_t03_03_specified_thread_send(monkeypatch):
 @pytest.mark.asyncio
 @pytest.mark.requires_hermes
 async def test_t03_04_long_text_is_split_in_order(monkeypatch):
-    monkeypatch.delenv("SEATALK_HOME_CHANNEL", raising=False)
     client = FakeSeaTalkClient()
     seatalk = adapter.SeaTalkAdapter(_config(client, outbound_coalescing=False))
 
@@ -117,7 +113,6 @@ async def test_t03_04_long_text_is_split_in_order(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_t03_05_image_and_file_payloads(monkeypatch, tmp_path: Path):
-    monkeypatch.delenv("SEATALK_HOME_CHANNEL", raising=False)
     client = FakeSeaTalkClient()
     seatalk = adapter.SeaTalkAdapter(_config(client))
     image_path = tmp_path / "photo.png"
@@ -142,7 +137,6 @@ async def test_t03_05_image_and_file_payloads(monkeypatch, tmp_path: Path):
 
 @pytest.mark.asyncio
 async def test_t03_06_send_failure_propagates(monkeypatch):
-    monkeypatch.delenv("SEATALK_HOME_CHANNEL", raising=False)
     seatalk = adapter.SeaTalkAdapter(_config(FailingClient(), outbound_coalescing=False))
 
     result = await seatalk.send("EmpABC", "hello")
@@ -154,8 +148,6 @@ async def test_t03_06_send_failure_propagates(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_t03_07_coalescer_default_merges_same_target(monkeypatch):
-    monkeypatch.delenv("SEATALK_OUTBOUND_COALESCING", raising=False)
-    monkeypatch.delenv("SEATALK_HOME_CHANNEL", raising=False)
     client = FakeSeaTalkClient()
     seatalk = adapter.SeaTalkAdapter(_config(
         client,
@@ -176,7 +168,6 @@ async def test_t03_07_coalescer_default_merges_same_target(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_t03_08_coalescer_isolates_threads_and_can_disable(monkeypatch):
-    monkeypatch.delenv("SEATALK_HOME_CHANNEL", raising=False)
     client = FakeSeaTalkClient()
     seatalk = adapter.SeaTalkAdapter(_config(
         client,
@@ -198,7 +189,6 @@ async def test_t03_08_coalescer_isolates_threads_and_can_disable(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_t03_09_shutdown_flushes_and_media_bypasses_coalescer(monkeypatch, tmp_path: Path):
-    monkeypatch.delenv("SEATALK_HOME_CHANNEL", raising=False)
     client = FakeSeaTalkClient()
     seatalk = adapter.SeaTalkAdapter(_config(
         client,
@@ -214,6 +204,17 @@ async def test_t03_09_shutdown_flushes_and_media_bypasses_coalescer(monkeypatch,
     await seatalk.disconnect()
 
     assert client.calls[1][2]["text"]["content"] == "queued"
+
+
+@pytest.mark.asyncio
+async def test_t03_10_processing_indicator_off_skips_typing(monkeypatch):
+    client = FakeSeaTalkClient()
+    seatalk = adapter.SeaTalkAdapter(_config(client, processing_indicator="off"))
+
+    result = await seatalk.send_typing("EmpABC")
+
+    assert result.success is True
+    assert client.calls == []
 
 
 def test_t08_target_parser_full_formats():

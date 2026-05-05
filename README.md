@@ -50,8 +50,8 @@ that deployment.
 
 User-installed plugins appear in `hermes setup` / `hermes gateway setup` only
 after `hermes plugins enable seatalk-platform` has been executed. The setup
-wizard writes runtime values to `~/.hermes/.env`; it does not clone, install, or
-enable the plugin.
+wizard writes SeaTalk secrets to `~/.hermes/.env` and non-secret runtime policy
+to `~/.hermes/config.yaml`; it does not clone, install, or enable the plugin.
 
 ```bash
 hermes gateway setup
@@ -59,69 +59,92 @@ hermes gateway setup
 
 The SeaTalk wizard asks for values in this order:
 
-1. Common credentials: `SEATALK_APP_ID`, `SEATALK_APP_SECRET`,
-   `SEATALK_SIGNING_SECRET`.
-2. Inbound mode: `relay` or `webhook`.
+1. App identity and secrets: `app_id` in `config.yaml`, plus
+   `SEATALK_APP_SECRET` and `SEATALK_SIGNING_SECRET` in `.env`.
+2. Inbound mode: `webhook` or `relay`.
 3. Mode-specific values.
-4. Optional defaults and authorization controls.
+4. Optional defaults and SeaTalk authorization policy.
 
-After saving, restart the relevant Hermes process so the new env values are
-visible to the gateway and plugin loader.
+The wizard does not write SeaTalk or global allow-all settings. SeaTalk DMs
+remain deny-by-default unless `platforms.seatalk.extra.allow_from` is configured
+or `dm_policy` is explicitly opened. Group access is controlled separately by
+`group_policy` and defaults to `disabled`.
+After saving, restart the relevant Hermes process so the new config is visible
+to the gateway and plugin loader.
 
 ## Configuration
 
-Copy `env.example` into `~/.hermes/.env` or enter the same values through the
-setup TUI.
+Use `~/.hermes/.env` only for SeaTalk secrets:
 
-Common values required by both modes:
-
-```bash
-SEATALK_APP_ID=your_app_id
+```dotenv
 SEATALK_APP_SECRET=your_app_secret
 SEATALK_SIGNING_SECRET=your_signing_secret
-SEATALK_MODE=relay
 ```
 
-Relay mode uses a WebSocket relay service to receive SeaTalk callbacks. Only
-`SEATALK_RELAY_URL` is additionally required; webhook host, port, and path are
-ignored even if stale values remain in the env file.
+All non-secret SeaTalk runtime settings live in `~/.hermes/config.yaml`:
 
-```bash
-SEATALK_MODE=relay
-SEATALK_RELAY_URL=wss://relay.example.com/ws
+```yaml
+platforms:
+  seatalk:
+    enabled: true
+    extra:
+      app_id: your_app_id
+      mode: webhook
+      webhook_host: 0.0.0.0
+      webhook_port: 8080
+      webhook_path: /callback
+      home_channel: group/123
+      home_channel_name: SeaTalk Home
+      home_channel_thread_id:
+      dm_policy: allowlist
+      allow_from:
+        - alice@example.com
+        - bob@example.com
+      group_policy: open
+      group_allow_from: []
+      group_sender_allow_from:
+        - alice@example.com
+        - bob@example.com
+      processing_indicator: typing
+      media_allow_hosts:
+        - openapi.seatalk.io
+      outbound_coalescing: true
 ```
 
-Webhook mode runs a local HTTP callback endpoint. It does not require
-`SEATALK_RELAY_URL`; host, port, and path have defaults and can be changed when
-needed. Configure the SeaTalk Bot App callback URL to point at the externally
-reachable endpoint, usually through a reverse proxy or tunnel that terminates
-TLS.
+Webhook mode runs a local HTTP callback endpoint and replaces `relay_url` with
+listener settings. Relay mode uses a WebSocket relay service to receive SeaTalk
+callbacks and requires only `relay_url` in addition to the shared settings:
 
-```bash
-SEATALK_MODE=webhook
-SEATALK_WEBHOOK_HOST=0.0.0.0
-SEATALK_WEBHOOK_PORT=8646
-SEATALK_WEBHOOK_PATH=/callback
+```yaml
+platforms:
+  seatalk:
+    enabled: true
+    extra:
+      app_id: your_app_id
+      mode: relay
+      relay_url: wss://relay.example.com/ws
 ```
 
-Optional home channel and authorization values:
+Configure the SeaTalk Bot App callback URL to point at the externally reachable
+endpoint, usually through a reverse proxy or tunnel that terminates TLS.
 
-```bash
-SEATALK_HOME_CHANNEL=group/123
-SEATALK_HOME_CHANNEL_NAME=SeaTalk Home
-SEATALK_HOME_CHANNEL_THREAD_ID=
-SEATALK_ALLOWED_USERS=alice@example.com,bob@example.com
-SEATALK_ALLOW_ALL_USERS=false
-SEATALK_GROUP_ALLOWED_USERS=group/123,group/456
-SEATALK_REQUIRE_MENTION=true
-```
+`dm_policy` controls direct messages. With the default `allowlist`, `allow_from`
+must match the SeaTalk sender email or employee code. `open` allows all direct
+messages. `pairing` delegates direct-message approval to Hermes pairing and
+cannot be combined with enabled group access.
 
-`SEATALK_ALLOWED_USERS` is the Hermes user authorization allowlist. SeaTalk
-sender email is preferred as `user_id`; when email is unavailable, employee code
-is preserved as the fallback identity. `SEATALK_GROUP_ALLOWED_USERS` is a
-SeaTalk channel pre-filter for group chats. Passing the group filter does not
-authorize every user in that group; the message still goes through the Hermes
-user authorization path.
+`group_policy` controls group chats. The default `disabled` rejects all group
+messages. `allowlist` requires the raw SeaTalk `group_id` to appear in
+`group_allow_from`; do not prefix values with `group/`. `open` allows all
+groups. For either enabled group policy, `group_sender_allow_from` can restrict
+which users may trigger Hermes inside those groups. Leaving
+`group_sender_allow_from` empty means every sender in the allowed groups can
+trigger Hermes, so keep it populated when groups are open but users must remain
+restricted.
+
+SeaTalk sender email is preferred as `user_id`; when email is unavailable,
+employee code is preserved as the fallback identity. SeaTalk policy is enforced
+by the plugin before messages are passed into Hermes.
 
 ## Status And Troubleshooting
 
@@ -143,14 +166,14 @@ Common checks:
   `hermes plugins enable seatalk-platform`, then restart or rerun setup.
 - `send_message(target="seatalk")` reports no live adapter: start or restart the
   gateway with the plugin enabled and valid SeaTalk config.
-- Relay mode is not receiving events: verify `SEATALK_RELAY_URL`, relay service
+- Relay mode is not receiving events: verify `relay_url`, relay service
   reachability, and gateway logs.
 - Webhook mode rejects events: verify the SeaTalk callback URL, raw-body
   signing secret, and reverse proxy body forwarding.
-- Authorized group still rejects a sender: check both `SEATALK_GROUP_ALLOWED_USERS`
-  and `SEATALK_ALLOWED_USERS` / `SEATALK_ALLOW_ALL_USERS`.
+- Authorized group still rejects a sender: check `group_policy`,
+  `group_allow_from`, and `group_sender_allow_from`.
 - Config changed but behavior did not: restart the gateway process that loads
-  `~/.hermes/.env`.
+  `~/.hermes/config.yaml` and `~/.hermes/.env`.
 
 ## Tests
 

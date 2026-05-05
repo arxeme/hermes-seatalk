@@ -1,9 +1,11 @@
 ---
-title: Hermes SeaTalk Plugin 工作分解结构
-status: draft
-updated: 2026-05-04
-related_td: ./td_hermes-seatalk-plugin_zh.md
-related_test_plan: ../test/tp_hermes-seatalk-plugin_zh.md
+标题: Hermes SeaTalk Plugin 工作分解结构
+状态: draft
+更新日期: 2026-05-05
+参考材料:
+  - Hermes SeaTalk Plugin 技术设计 (./td_hermes-seatalk-plugin_zh.md)
+  - Hermes SeaTalk Plugin 测试计划 (../test/tp_hermes-seatalk-plugin_zh.md)
+文档摘要: 将 Hermes SeaTalk Plugin 技术设计拆解为可执行任务、依赖关系、完成条件和验证方式。
 ---
 
 # Hermes SeaTalk Plugin 工作分解结构

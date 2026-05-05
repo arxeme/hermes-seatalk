@@ -164,7 +164,6 @@ async def test_t04_05_fast_ack_does_not_wait_for_dispatch():
 @pytest.mark.asyncio
 @pytest.mark.requires_hermes
 async def test_t04_06_adapter_webhook_updates_health(monkeypatch):
-    monkeypatch.delenv("SEATALK_WEBHOOK_PORT", raising=False)
     client = SimpleNamespace(close=lambda: None)
     cfg = SimpleNamespace(extra={
         "app_id": "app-id",

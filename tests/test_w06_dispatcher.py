@@ -71,6 +71,8 @@ def _group_payload(event_id="event-1", text="hello", thread_id="ThreadABC", grou
 
 
 def _dispatcher(fake_adapter=None, fake_client=None, **kwargs):
+    kwargs.setdefault("dm_policy", "open")
+    kwargs.setdefault("group_policy", "open")
     return SeaTalkEventDispatcher(
         adapter=fake_adapter or FakeAdapter(),
         client=fake_client or FakeClient(),
@@ -83,7 +85,6 @@ def _dispatcher(fake_adapter=None, fake_client=None, **kwargs):
 
 @pytest.mark.asyncio
 async def test_t06_01_webhook_relay_isomorphic(monkeypatch):
-    monkeypatch.delenv("SEATALK_GROUP_ALLOWED_USERS", raising=False)
     webhook_adapter = FakeAdapter()
     relay_adapter = FakeAdapter()
 
@@ -104,7 +105,6 @@ async def test_t06_01_webhook_relay_isomorphic(monkeypatch):
 async def test_t06_02_session_key_stable(monkeypatch):
     from gateway.session import build_session_key
 
-    monkeypatch.delenv("SEATALK_GROUP_ALLOWED_USERS", raising=False)
     fake_adapter = FakeAdapter()
     dispatcher = _dispatcher(fake_adapter)
 
@@ -120,7 +120,6 @@ async def test_t06_02_session_key_stable(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_t06_03_dedup(monkeypatch):
-    monkeypatch.delenv("SEATALK_GROUP_ALLOWED_USERS", raising=False)
     fake_adapter = FakeAdapter()
     dispatcher = _dispatcher(fake_adapter)
     payload = _dm_payload(event_id="same-event")
@@ -133,12 +132,12 @@ async def test_t06_03_dedup(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_t06_04_debounce_merge(monkeypatch):
-    monkeypatch.delenv("SEATALK_GROUP_ALLOWED_USERS", raising=False)
     fake_adapter = FakeAdapter()
     dispatcher = SeaTalkEventDispatcher(
         adapter=fake_adapter,
         client=FakeClient(),
         app_id="app-id",
+        dm_policy="open",
         debounce_idle_seconds=60,
         debounce_max_seconds=60,
     )
@@ -155,7 +154,6 @@ async def test_t06_04_debounce_merge(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_t06_05_quoted_message(monkeypatch):
-    monkeypatch.delenv("SEATALK_GROUP_ALLOWED_USERS", raising=False)
     client = FakeClient()
     client.quoted["quoted-1"] = {
         "tag": "text",
@@ -176,7 +174,6 @@ async def test_t06_05_quoted_message(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_t06_06_attachment_failure_degrades(monkeypatch):
-    monkeypatch.delenv("SEATALK_GROUP_ALLOWED_USERS", raising=False)
     fake_adapter = FakeAdapter()
     payload = _dm_payload(event_id="event-1", text="")
     payload["event"]["message"] = {

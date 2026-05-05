@@ -19,6 +19,7 @@ def _isolate_env_vars():
         for key, value in os.environ.items()
         if key.startswith("SEATALK_")
         or key.startswith("GATEWAY_")
+        or key.startswith("HERMES_SEATALK_")
         or key in {"HERMES_HOME", "HOME_CHANNEL"}
     }
     yield
@@ -26,6 +27,7 @@ def _isolate_env_vars():
         if (
             key.startswith("SEATALK_")
             or key.startswith("GATEWAY_")
+            or key.startswith("HERMES_SEATALK_")
             or key in {"HERMES_HOME", "HOME_CHANNEL"}
         ) and key not in tracked:
             os.environ.pop(key, None)
@@ -71,6 +73,8 @@ def _isolate_runtime_patches():
 
         snapshots.append((scheduler, "_KNOWN_DELIVERY_PLATFORMS", scheduler._KNOWN_DELIVERY_PLATFORMS))
         snapshots.append((scheduler, "_HOME_TARGET_ENV_VARS", dict(scheduler._HOME_TARGET_ENV_VARS)))
+        snapshots.append((scheduler, "_get_home_target_chat_id", scheduler._get_home_target_chat_id))
+        snapshots.append((scheduler, "_get_home_target_thread_id", scheduler._get_home_target_thread_id))
     except Exception:
         pass
 

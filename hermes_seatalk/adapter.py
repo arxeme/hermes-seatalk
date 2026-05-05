@@ -49,12 +49,14 @@ from .webhook import SeaTalkWebhookServer
 SEATALK_PLATFORM = "seatalk"
 SEATALK_PLUGIN_NAME = "seatalk-platform"
 VALID_MODES = {"relay", "webhook"}
+VALID_DM_POLICIES = {"allowlist", "open", "pairing"}
+VALID_GROUP_POLICIES = {"disabled", "allowlist", "open"}
+VALID_PROCESSING_INDICATORS = {"typing", "off"}
 REQUIRED_ENV = [
-    "SEATALK_APP_ID",
     "SEATALK_APP_SECRET",
     "SEATALK_SIGNING_SECRET",
-    "SEATALK_MODE",
 ]
+INTERNAL_ALLOWED_USERS_ENV = "HERMES_SEATALK_ALLOWED_USERS"
 MAX_MESSAGE_LENGTH = 4000
 OUTBOUND_COALESCING_IDLE_SECONDS = 1.0
 
@@ -70,25 +72,20 @@ def _extra(config: Any) -> dict[str, Any]:
     return raw if isinstance(raw, dict) else {}
 
 
-def _cfg_value(config: Any, env_name: str, extra_name: str) -> str:
-    value = os.getenv(env_name)
-    if value is not None:
-        return value.strip()
+def _cfg_value(config: Any, extra_name: str) -> str:
     raw = _extra(config).get(extra_name, "")
     return str(raw).strip() if raw is not None else ""
 
 
-def _cfg_bool(config: Any, env_name: str, extra_name: str, default: bool) -> bool:
-    raw = os.getenv(env_name)
-    if raw is None:
-        raw = _extra(config).get(extra_name, default)
+def _cfg_bool(config: Any, extra_name: str, default: bool) -> bool:
+    raw = _extra(config).get(extra_name, default)
     if isinstance(raw, bool):
         return raw
     return str(raw).strip().lower() not in {"0", "false", "no", "off"}
 
 
-def _cfg_float(config: Any, env_name: str, extra_name: str, default: float) -> float:
-    raw = _cfg_value(config, env_name, extra_name)
+def _cfg_float(config: Any, extra_name: str, default: float) -> float:
+    raw = _cfg_value(config, extra_name)
     if not raw:
         return default
     try:
@@ -101,32 +98,24 @@ def _env_value(name: str) -> str:
     return (os.getenv(name) or "").strip()
 
 
-def _mode_from_env() -> str:
-    return _env_value("SEATALK_MODE").lower()
-
-
 def _mode_from_config(config: Any) -> str:
-    return _cfg_value(config, "SEATALK_MODE", "mode").lower()
+    return _cfg_value(config, "mode").lower() or "webhook"
 
 
-def _credentials_from_env() -> bool:
-    return all(_env_value(name) for name in REQUIRED_ENV)
+def _policy_from_config(config: Any, extra_name: str, default: str) -> str:
+    return _cfg_value(config, extra_name).lower() or default
+
+
+def _secrets_from_env() -> bool:
+    return bool(_env_value("SEATALK_APP_SECRET") and _env_value("SEATALK_SIGNING_SECRET"))
 
 
 def _credentials_from_config(config: Any) -> bool:
-    return all(
-        _cfg_value(config, env_name, extra_name)
-        for env_name, extra_name in (
-            ("SEATALK_APP_ID", "app_id"),
-            ("SEATALK_APP_SECRET", "app_secret"),
-            ("SEATALK_SIGNING_SECRET", "signing_secret"),
-            ("SEATALK_MODE", "mode"),
-        )
-    )
+    return bool(_cfg_value(config, "app_id") and _mode_from_config(config) and _secrets_from_env())
 
 
 def _webhook_port_from_config(config: Any) -> int | None:
-    raw = _cfg_value(config, "SEATALK_WEBHOOK_PORT", "webhook_port") or "8646"
+    raw = _cfg_value(config, "webhook_port") or "8080"
     try:
         port = int(raw)
     except (TypeError, ValueError):
@@ -152,23 +141,14 @@ def _platform_instance() -> Any:
 
 
 def check_seatalk_requirements() -> bool:
-    """Return whether env-only plugin requirements are satisfied."""
+    """Return whether dependencies, secrets, and config.yaml values are present."""
     try:
         import aiohttp  # noqa: F401
     except ImportError:
         return False
 
-    if not _credentials_from_env():
-        return False
-
-    mode = _mode_from_env()
-    if mode not in VALID_MODES:
-        return False
-    if mode == "relay":
-        return bool(_env_value("SEATALK_RELAY_URL"))
-    # Webhook port has a valid default (8646); port-range validation is deferred
-    # to _validate_seatalk_config which receives the full config object.
-    return True
+    config = type("_SeaTalkConfig", (), {"extra": _config_file_extra()})()
+    return _validate_seatalk_config(config)
 
 
 def _validate_seatalk_config(config: Any) -> bool:
@@ -179,8 +159,19 @@ def _validate_seatalk_config(config: Any) -> bool:
     mode = _mode_from_config(config)
     if mode not in VALID_MODES:
         return False
+    dm_policy = _policy_from_config(config, "dm_policy", "allowlist")
+    if dm_policy not in VALID_DM_POLICIES:
+        return False
+    group_policy = _policy_from_config(config, "group_policy", "disabled")
+    if group_policy not in VALID_GROUP_POLICIES:
+        return False
+    processing_indicator = _policy_from_config(config, "processing_indicator", "typing")
+    if processing_indicator not in VALID_PROCESSING_INDICATORS:
+        return False
+    if dm_policy == "pairing" and group_policy in {"allowlist", "open"}:
+        return False
     if mode == "relay":
-        return bool(_cfg_value(config, "SEATALK_RELAY_URL", "relay_url"))
+        return bool(_cfg_value(config, "relay_url"))
     return _webhook_port_from_config(config) is not None
 
 
@@ -200,20 +191,17 @@ class SeaTalkAdapter(BasePlatformAdapter):
             self._running = False
         self.config = config
         self.extra = _extra(config)
-        self.app_id = _cfg_value(config, "SEATALK_APP_ID", "app_id")
-        self.app_secret = _cfg_value(config, "SEATALK_APP_SECRET", "app_secret")
-        self.signing_secret = _cfg_value(config, "SEATALK_SIGNING_SECRET", "signing_secret")
-        self.mode = _mode_from_config(config) or "relay"
-        self.relay_url = _cfg_value(config, "SEATALK_RELAY_URL", "relay_url")
-        self.home_channel = _cfg_value(config, "SEATALK_HOME_CHANNEL", "home_channel")
-        self.home_channel_thread_id = _cfg_value(
-            config,
-            "SEATALK_HOME_CHANNEL_THREAD_ID",
-            "home_channel_thread_id",
-        )
+        _sync_auth_env_from_extra(self.extra)
+        self.app_id = _cfg_value(config, "app_id")
+        self.app_secret = _env_value("SEATALK_APP_SECRET")
+        self.signing_secret = _env_value("SEATALK_SIGNING_SECRET")
+        self.mode = _mode_from_config(config)
+        self.relay_url = _cfg_value(config, "relay_url")
+        self.home_channel = _cfg_value(config, "home_channel")
+        self.home_channel_thread_id = _cfg_value(config, "home_channel_thread_id")
+        self.processing_indicator = _policy_from_config(config, "processing_indicator", "typing")
         self.outbound_coalescing = _cfg_bool(
             config,
-            "SEATALK_OUTBOUND_COALESCING",
             "outbound_coalescing",
             True,
         )
@@ -224,22 +212,25 @@ class SeaTalkAdapter(BasePlatformAdapter):
         )
         self.inbound_events: list[tuple[dict[str, Any], str]] = []
         self._seatalk_event_handler = self.extra.get("event_handler")
-        allow_hosts = _cfg_csv(config, "SEATALK_MEDIA_ALLOW_HOSTS", "media_allow_hosts")
+        allow_hosts = _cfg_csv(config, "media_allow_hosts", lower=True)
         self._dispatcher = self.extra.get("dispatcher") or SeaTalkEventDispatcher(
             adapter=self,
             client=self.client,
             app_id=self.app_id,
             emit=self.extra.get("message_event_handler"),
             media_allow_hosts=allow_hosts or None,
+            dm_policy=_policy_from_config(config, "dm_policy", "allowlist"),
+            allowlist=_cfg_csv(config, "allow_from", lower=True),
+            group_policy=_policy_from_config(config, "group_policy", "disabled"),
+            group_allowlist=_cfg_csv(config, "group_allow_from"),
+            group_sender_allowlist=_cfg_csv(config, "group_sender_allow_from", lower=True),
             debounce_idle_seconds=_cfg_float(
                 config,
-                "SEATALK_INBOUND_DEBOUNCE_IDLE_SECONDS",
                 "inbound_debounce_idle_seconds",
                 1.5,
             ),
             debounce_max_seconds=_cfg_float(
                 config,
-                "SEATALK_INBOUND_DEBOUNCE_MAX_SECONDS",
                 "inbound_debounce_max_seconds",
                 5.0,
             ),
@@ -254,7 +245,6 @@ class SeaTalkAdapter(BasePlatformAdapter):
             max_length=MAX_MESSAGE_LENGTH,
             idle_flush_seconds=_cfg_float(
                 config,
-                "SEATALK_OUTBOUND_COALESCING_IDLE_SECONDS",
                 "outbound_coalescing_idle_seconds",
                 OUTBOUND_COALESCING_IDLE_SECONDS,
             ),
@@ -264,9 +254,9 @@ class SeaTalkAdapter(BasePlatformAdapter):
         try:
             if self.mode == "webhook":
                 self._webhook_server = SeaTalkWebhookServer(
-                    host=_cfg_value(self.config, "SEATALK_WEBHOOK_HOST", "webhook_host") or "0.0.0.0",
-                    port=_webhook_port_from_config(self.config) or 8646,
-                    path=_cfg_value(self.config, "SEATALK_WEBHOOK_PATH", "webhook_path") or "/callback",
+                    host=_cfg_value(self.config, "webhook_host") or "0.0.0.0",
+                    port=_webhook_port_from_config(self.config) or 8080,
+                    path=_cfg_value(self.config, "webhook_path") or "/callback",
                     signing_secret=self.signing_secret,
                     dispatch=self._dispatch_event,
                 )
@@ -282,19 +272,16 @@ class SeaTalkAdapter(BasePlatformAdapter):
                 dispatch=self._dispatch_event,
                 reconnect_initial_seconds=_cfg_float(
                     self.config,
-                    "SEATALK_RELAY_RECONNECT_INITIAL_SECONDS",
                     "relay_reconnect_initial_seconds",
                     1.0,
                 ),
                 reconnect_max_seconds=_cfg_float(
                     self.config,
-                    "SEATALK_RELAY_RECONNECT_MAX_SECONDS",
                     "relay_reconnect_max_seconds",
                     30.0,
                 ),
                 heartbeat_timeout_seconds=_cfg_float(
                     self.config,
-                    "SEATALK_RELAY_HEARTBEAT_TIMEOUT_SECONDS",
                     "relay_heartbeat_timeout_seconds",
                     60.0,
                 ),
@@ -346,6 +333,8 @@ class SeaTalkAdapter(BasePlatformAdapter):
 
     async def send_typing(self, chat_id: str, metadata: dict[str, Any] | None = None) -> SendResult:
         try:
+            if self.processing_indicator == "off":
+                return SendResult(success=True)
             target = await self._resolve_target(chat_id, metadata)
             if target.is_group:
                 await self.client.send_group_chat_typing(target.chat_id[len("group/") :], target.thread_id)
@@ -564,6 +553,108 @@ class SeaTalkAdapter(BasePlatformAdapter):
             self._fatal_error_message = message
 
 
+def _raw_config_file() -> dict[str, Any]:
+    try:
+        import yaml
+        from hermes_cli.config import get_config_path
+    except Exception:
+        return {}
+
+    path = get_config_path()
+    if not path.exists():
+        return {}
+    try:
+        with path.open(encoding="utf-8") as handle:
+            loaded = yaml.safe_load(handle) or {}
+    except Exception:
+        return {}
+    return loaded if isinstance(loaded, dict) else {}
+
+
+def _config_file_extra() -> dict[str, Any]:
+    config = _raw_config_file()
+    platforms = config.get("platforms")
+    if not isinstance(platforms, dict):
+        return {}
+    seatalk = platforms.get(SEATALK_PLATFORM)
+    if not isinstance(seatalk, dict):
+        return {}
+    extra = seatalk.get("extra")
+    return extra if isinstance(extra, dict) else {}
+
+
+def _ensure_seatalk_extra(config: dict[str, Any]) -> dict[str, Any]:
+    platforms = config.setdefault("platforms", {})
+    if not isinstance(platforms, dict):
+        platforms = {}
+        config["platforms"] = platforms
+    seatalk = platforms.setdefault(SEATALK_PLATFORM, {})
+    if not isinstance(seatalk, dict):
+        seatalk = {}
+        platforms[SEATALK_PLATFORM] = seatalk
+    seatalk["enabled"] = True
+    extra = seatalk.setdefault("extra", {})
+    if not isinstance(extra, dict):
+        extra = {}
+        seatalk["extra"] = extra
+    return extra
+
+
+def _coerce_csv(raw: Any, *, lower: bool = False) -> str:
+    if raw is None:
+        return ""
+    if isinstance(raw, (list, tuple, set)):
+        values = [str(item).strip() for item in raw if str(item).strip()]
+    else:
+        values = [item.strip() for item in str(raw).split(",") if item.strip()]
+    if lower:
+        values = [item.lower() for item in values]
+    return ",".join(values)
+
+
+def _csv_list(raw: Any) -> list[str]:
+    if raw is None:
+        return []
+    if isinstance(raw, (list, tuple, set)):
+        return [str(item).strip() for item in raw if str(item).strip()]
+    return [item.strip() for item in str(raw).split(",") if item.strip()]
+
+
+def _set_optional(extra: dict[str, Any], key: str, value: str) -> None:
+    value = value.strip()
+    if value:
+        extra[key] = value
+    else:
+        extra.pop(key, None)
+
+
+def _set_optional_csv(extra: dict[str, Any], key: str, value: str) -> None:
+    values = _csv_list(value)
+    if values:
+        extra[key] = values
+    else:
+        extra.pop(key, None)
+
+
+def _sync_auth_env_from_extra(extra: dict[str, Any]) -> None:
+    dm_policy = str(extra.get("dm_policy") or "allowlist").strip().lower()
+    group_policy = str(extra.get("group_policy") or "disabled").strip().lower()
+    allowlist = _csv_list(extra.get("allow_from"))
+
+    if dm_policy == "open" or group_policy in {"allowlist", "open"}:
+        os.environ[INTERNAL_ALLOWED_USERS_ENV] = "*"
+        return
+
+    values: list[str] = []
+    if dm_policy == "allowlist":
+        values.extend(allowlist)
+    deduped = list(dict.fromkeys(item.strip() for item in values if item and item.strip()))
+    if deduped:
+        os.environ[INTERNAL_ALLOWED_USERS_ENV] = ",".join(deduped)
+    else:
+        os.environ.pop(INTERNAL_ALLOWED_USERS_ENV, None)
+
+
 def _seatalk_setup_wizard() -> None:
     """Interactive setup entry point used by `hermes gateway setup`."""
     from hermes_cli.setup import (
@@ -573,14 +664,20 @@ def _seatalk_setup_wizard() -> None:
         print_success,
         prompt,
         prompt_choice,
+        save_config,
         save_env_value,
     )
 
     print_header("SeaTalk")
     print_info("Configure the SeaTalk platform plugin. Restart the gateway after saving.")
 
+    raw_config = _raw_config_file()
+    extra = _ensure_seatalk_extra(raw_config)
+
+    app_id = prompt("SeaTalk app id", default=str(extra.get("app_id") or ""))
+    _set_optional(extra, "app_id", app_id)
+
     for env_name, label in (
-        ("SEATALK_APP_ID", "SeaTalk app id"),
         ("SEATALK_APP_SECRET", "SeaTalk app secret"),
         ("SEATALK_SIGNING_SECRET", "SeaTalk signing secret"),
     ):
@@ -588,7 +685,7 @@ def _seatalk_setup_wizard() -> None:
         if value:
             save_env_value(env_name, value)
 
-    existing_mode = (get_env_value("SEATALK_MODE") or "relay").lower()
+    existing_mode = str(extra.get("mode") or "webhook").lower()
     default_index = 1 if existing_mode == "webhook" else 0
     mode_choice = prompt_choice(
         "SeaTalk connection mode",
@@ -596,49 +693,97 @@ def _seatalk_setup_wizard() -> None:
         default_index,
     )
     mode = "webhook" if mode_choice == 1 else "relay"
-    save_env_value("SEATALK_MODE", mode)
+    extra["mode"] = mode
 
     if mode == "relay":
         relay_url = prompt(
             "SeaTalk relay WebSocket URL",
-            default=get_env_value("SEATALK_RELAY_URL") or "",
+            default=str(extra.get("relay_url") or ""),
         )
-        if relay_url:
-            save_env_value("SEATALK_RELAY_URL", relay_url)
+        _set_optional(extra, "relay_url", relay_url)
+        for stale_key in ("webhook_host", "webhook_port", "webhook_path"):
+            extra.pop(stale_key, None)
     else:
-        for env_name, label, default in (
-            ("SEATALK_WEBHOOK_HOST", "Webhook bind host", "0.0.0.0"),
-            ("SEATALK_WEBHOOK_PORT", "Webhook port", "8646"),
-            ("SEATALK_WEBHOOK_PATH", "Webhook path", "/callback"),
+        extra.pop("relay_url", None)
+        for key, label, default in (
+            ("webhook_host", "Webhook bind host", "0.0.0.0"),
+            ("webhook_port", "Webhook port", "8080"),
+            ("webhook_path", "Webhook path", "/callback"),
         ):
-            value = prompt(label, default=get_env_value(env_name) or default)
-            if value:
-                save_env_value(env_name, value)
+            value = prompt(label, default=str(extra.get(key) or default))
+            _set_optional(extra, key, value)
         print_info("Point the SeaTalk Bot App callback URL at this webhook endpoint.")
 
-    for env_name, label in (
-        ("SEATALK_HOME_CHANNEL", "Default SeaTalk home channel (optional)"),
-        ("SEATALK_HOME_CHANNEL_THREAD_ID", "Default thread id (optional)"),
-        ("SEATALK_ALLOWED_USERS", "Allowed users, comma-separated emails (optional)"),
-        ("SEATALK_GROUP_ALLOWED_USERS", "Allowed groups, comma-separated group/<id> (optional)"),
-        ("SEATALK_REQUIRE_MENTION", "Require bot mention in groups, true/false (optional)"),
+    for key, label in (
+        ("home_channel", "Default SeaTalk home channel (optional)"),
+        ("home_channel_thread_id", "Default thread id (optional)"),
     ):
-        value = prompt(label, default=get_env_value(env_name) or "")
-        if value:
-            save_env_value(env_name, value)
+        value = prompt(label, default=str(extra.get(key) or ""))
+        _set_optional(extra, key, value)
 
-    print_success("SeaTalk configuration saved to ~/.hermes/.env")
+    dm_policy_existing = str(extra.get("dm_policy") or "allowlist").lower()
+    dm_policy_index = {"allowlist": 0, "open": 1, "pairing": 2}.get(dm_policy_existing, 0)
+    dm_policy_choice = prompt_choice(
+        "DM policy",
+        ["allowlist", "open", "pairing"],
+        dm_policy_index,
+    )
+    extra["dm_policy"] = ["allowlist", "open", "pairing"][dm_policy_choice]
+
+    allowed = prompt(
+        "DM allowed users, comma-separated emails or employee codes",
+        default=_coerce_csv(extra.get("allow_from")),
+    )
+    _set_optional_csv(extra, "allow_from", allowed)
+
+    group_policy_existing = str(extra.get("group_policy") or "disabled").lower()
+    group_policy_index = {"disabled": 0, "allowlist": 1, "open": 2}.get(group_policy_existing, 0)
+    group_policy_choice = prompt_choice(
+        "Group policy",
+        ["disabled", "allowlist", "open"],
+        group_policy_index,
+    )
+    group_policy = ["disabled", "allowlist", "open"][group_policy_choice]
+    if extra["dm_policy"] == "pairing" and group_policy in {"allowlist", "open"}:
+        print_info("DM pairing cannot be combined with enabled group access; group policy remains disabled.")
+        group_policy = "disabled"
+    extra["group_policy"] = group_policy
+    if group_policy == "allowlist":
+        groups = prompt(
+            "Allowed groups, comma-separated group ids",
+            default=_coerce_csv(extra.get("group_allow_from")),
+        )
+        _set_optional_csv(extra, "group_allow_from", groups)
+    else:
+        extra.pop("group_allow_from", None)
+
+    if group_policy in {"allowlist", "open"}:
+        group_senders = prompt(
+            "Group sender allowlist, comma-separated emails or employee codes (optional)",
+            default=_coerce_csv(extra.get("group_sender_allow_from")),
+        )
+        _set_optional_csv(extra, "group_sender_allow_from", group_senders)
+    else:
+        extra.pop("group_sender_allow_from", None)
+
+    processing_indicator_existing = str(extra.get("processing_indicator") or "typing").lower()
+    processing_indicator_index = 1 if processing_indicator_existing == "off" else 0
+    processing_indicator_choice = prompt_choice(
+        "Processing indicator",
+        ["typing", "off"],
+        processing_indicator_index,
+    )
+    extra["processing_indicator"] = "off" if processing_indicator_choice == 1 else "typing"
+
+    save_config(raw_config)
+    _sync_auth_env_from_extra(extra)
+    print_success("SeaTalk configuration saved to ~/.hermes/config.yaml; secrets saved to ~/.hermes/.env")
     print_info("Restart the gateway for changes to take effect: hermes gateway restart")
 
 
-def _cfg_csv(config: Any, env_name: str, extra_name: str) -> set[str]:
-    raw = os.getenv(env_name)
-    if raw is None:
-        raw_value = _extra(config).get(extra_name)
-        if isinstance(raw_value, (list, tuple, set)):
-            return {str(item).strip().lower() for item in raw_value if str(item).strip()}
-        raw = str(raw_value or "")
-    return {item.strip().lower() for item in raw.split(",") if item.strip()}
+def _cfg_csv(config: Any, extra_name: str, *, lower: bool = False) -> set[str]:
+    csv = _coerce_csv(_extra(config).get(extra_name), lower=lower)
+    return {item.strip() for item in csv.split(",") if item.strip()}
 
 
 def _patch_cron_scheduler() -> None:
@@ -652,9 +797,27 @@ def _patch_cron_scheduler() -> None:
     if SEATALK_PLATFORM not in known:
         scheduler._KNOWN_DELIVERY_PLATFORMS = frozenset(set(known) | {SEATALK_PLATFORM})
 
-    home_envs = getattr(scheduler, "_HOME_TARGET_ENV_VARS", None)
-    if isinstance(home_envs, dict):
-        home_envs.setdefault(SEATALK_PLATFORM, "SEATALK_HOME_CHANNEL")
+    original_chat_id = getattr(scheduler, "_get_home_target_chat_id", None)
+    if callable(original_chat_id) and not getattr(original_chat_id, "_seatalk_patched", False):
+        def _patched_home_target_chat_id(platform_name: str) -> str:
+            if platform_name.lower() == SEATALK_PLATFORM:
+                return str(_config_file_extra().get("home_channel") or "").strip()
+            return original_chat_id(platform_name)
+
+        _patched_home_target_chat_id._seatalk_patched = True  # type: ignore[attr-defined]
+        _patched_home_target_chat_id._seatalk_original = original_chat_id  # type: ignore[attr-defined]
+        scheduler._get_home_target_chat_id = _patched_home_target_chat_id
+
+    original_thread_id = getattr(scheduler, "_get_home_target_thread_id", None)
+    if callable(original_thread_id) and not getattr(original_thread_id, "_seatalk_patched", False):
+        def _patched_home_target_thread_id(platform_name: str) -> str | None:
+            if platform_name.lower() == SEATALK_PLATFORM:
+                return str(_config_file_extra().get("home_channel_thread_id") or "").strip() or None
+            return original_thread_id(platform_name)
+
+        _patched_home_target_thread_id._seatalk_patched = True  # type: ignore[attr-defined]
+        _patched_home_target_thread_id._seatalk_original = original_thread_id  # type: ignore[attr-defined]
+        scheduler._get_home_target_thread_id = _patched_home_target_thread_id
 
 
 def _patch_send_message_tool() -> None:
@@ -766,7 +929,7 @@ async def _seatalk_send_to_platform(
 
 
 def _patch_home_channel() -> None:
-    """Read SeaTalk home channel env values from GatewayConfig fallback path."""
+    """Read SeaTalk home channel values from ``platforms.seatalk.extra``."""
     try:
         from gateway.config import GatewayConfig, HomeChannel
     except Exception:
@@ -782,14 +945,19 @@ def _patch_home_channel() -> None:
             return result
         if _platform_value(platform) != SEATALK_PLATFORM:
             return None
-        home = os.getenv("SEATALK_HOME_CHANNEL", "").strip()
+        try:
+            platform_config = self.platforms.get(_platform_instance())
+            extra = getattr(platform_config, "extra", {}) or {}
+        except Exception:
+            extra = {}
+        home = str(extra.get("home_channel") or "").strip()
         if not home:
             return None
         return HomeChannel(
             platform=platform,
             chat_id=home,
-            name=os.getenv("SEATALK_HOME_CHANNEL_NAME", "SeaTalk Home"),
-            thread_id=os.getenv("SEATALK_HOME_CHANNEL_THREAD_ID", "").strip() or None,
+            name=str(extra.get("home_channel_name") or "SeaTalk Home"),
+            thread_id=str(extra.get("home_channel_thread_id") or "").strip() or None,
         )
 
     _patched_get_home_channel._seatalk_patched = True  # type: ignore[attr-defined]
@@ -803,6 +971,7 @@ def _platform_value(platform: Any) -> str:
 
 def register(ctx: Any) -> None:
     """Plugin entry point called by the Hermes plugin loader."""
+    _sync_auth_env_from_extra(_config_file_extra())
     _patch_cron_scheduler()
     _patch_send_message_tool()
     _patch_send_to_platform()
@@ -820,8 +989,7 @@ def register(ctx: Any) -> None:
         required_env=REQUIRED_ENV,
         install_hint="Install aiohttp>=3.9 and configure SeaTalk credentials.",
         setup_fn=_seatalk_setup_wizard,
-        allowed_users_env="SEATALK_ALLOWED_USERS",
-        allow_all_env="SEATALK_ALLOW_ALL_USERS",
+        allowed_users_env=INTERNAL_ALLOWED_USERS_ENV,
         max_message_length=4000,
         emoji="💬",
         platform_hint=_SEATALK_PLATFORM_HINT,
