@@ -11,18 +11,31 @@ class SeaTalkTarget:
     thread_id: str | None
     is_group: bool
     is_email: bool
+    account_id: str | None = None
 
 
 def looks_like_email(value: str) -> bool:
     return "@" in value and "." in value.rsplit("@", 1)[-1]
 
 
-def parse_seatalk_target(target_ref: str) -> SeaTalkTarget:
+def parse_seatalk_target(
+    target_ref: str,
+    known_accounts: set[str] | None = None,
+) -> SeaTalkTarget:
     raw = (target_ref or "").strip()
     if raw.startswith("seatalk:"):
         raw = raw.split(":", 1)[1]
     if not raw:
         raise ValueError("SeaTalk target is required")
+
+    account_id = None
+    if known_accounts:
+        possible_account, separator, rest = raw.partition(":")
+        if separator and possible_account in known_accounts:
+            account_id = possible_account
+            raw = rest.strip()
+            if not raw:
+                raise ValueError("SeaTalk account-qualified target requires target")
 
     if raw.startswith("group/"):
         chat_id, thread_id = _split_optional_thread(raw)
@@ -34,6 +47,7 @@ def parse_seatalk_target(target_ref: str) -> SeaTalkTarget:
             thread_id=thread_id,
             is_group=True,
             is_email=False,
+            account_id=account_id,
         )
 
     chat_id, thread_id = _split_optional_thread(raw)
@@ -43,6 +57,7 @@ def parse_seatalk_target(target_ref: str) -> SeaTalkTarget:
         thread_id=thread_id,
         is_group=False,
         is_email=is_email,
+        account_id=account_id,
     )
 
 
@@ -60,4 +75,3 @@ def _split_optional_thread(value: str) -> tuple[str, str | None]:
     if not chat_id or not thread_id:
         raise ValueError("SeaTalk target thread format must be <chat_id>:<thread_id>")
     return chat_id, thread_id
-

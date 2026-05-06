@@ -52,11 +52,16 @@ class SeaTalkRelayClient:
             self._task = asyncio.create_task(self._run())
         if not wait_authenticated:
             return True
-        try:
-            await asyncio.wait_for(self.connected.wait(), timeout=timeout)
-            return True
-        except asyncio.TimeoutError:
-            return False
+        deadline = asyncio.get_running_loop().time() + timeout
+        while not self.connected.is_set() and not self.auth_failed:
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                return False
+            try:
+                await asyncio.wait_for(self.connected.wait(), timeout=min(remaining, 0.05))
+            except asyncio.TimeoutError:
+                continue
+        return self.connected.is_set()
 
     async def stop(self) -> None:
         self._stop.set()
@@ -145,4 +150,3 @@ class SeaTalkRelayClient:
                     return
                 else:
                     logger.info("SeaTalk relay unknown message type: %s", msg_type)
-

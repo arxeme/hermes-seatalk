@@ -1,0 +1,22 @@
+[project]
+name = "hermes-seatalk"
+version = "1.0.0"
+description = "SeaTalk platform plugin for Hermes Agent"
+requires-python = ">=3.11"
+dependencies = [
+    "aiohttp>=3.9",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.23",
+    "websockets>=12",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+markers = [
+    "requires_hermes: test requires a live Hermes installation (BasePlatformAdapter and gateway)",
+]

@@ -119,6 +119,7 @@ class SeaTalkEventDispatcher:
         adapter: Any,
         client: Any,
         app_id: str,
+        account_id: str | None = None,
         emit: Any | None = None,
         media_allow_hosts: set[str] | None = None,
         dm_policy: str = "allowlist",
@@ -135,6 +136,7 @@ class SeaTalkEventDispatcher:
         self.adapter = adapter
         self.client = client
         self.app_id = app_id
+        self.account_id = account_id
         self.emit = emit
         self.media_allow_hosts = {
             host.strip().lower()
@@ -266,7 +268,7 @@ class SeaTalkEventDispatcher:
 
         source = SessionSource(
             platform=_seatalk_platform(),
-            chat_id=employee_code,
+            chat_id=self._account_chat_id(employee_code),
             chat_name=email or employee_code,
             chat_type="dm",
             user_id=email or employee_code,
@@ -279,7 +281,12 @@ class SeaTalkEventDispatcher:
             source=source,
             text=text,
             message_id=message_id,
-            raw_message={"payload": payload, "ingress": ingress, "seatalk_media_errors": media_errors},
+            raw_message={
+                "payload": payload,
+                "ingress": ingress,
+                "seatalk_account_id": self.account_id,
+                "seatalk_media_errors": media_errors,
+            },
             media_urls=media_urls,
             media_types=media_types,
             media_errors=media_errors,
@@ -341,7 +348,7 @@ class SeaTalkEventDispatcher:
 
         source = SessionSource(
             platform=_seatalk_platform(),
-            chat_id=chat_id,
+            chat_id=self._account_chat_id(chat_id),
             chat_name=group_id,
             chat_type="group",
             user_id=email or employee_code,
@@ -354,7 +361,12 @@ class SeaTalkEventDispatcher:
             source=source,
             text=text,
             message_id=message_id,
-            raw_message={"payload": payload, "ingress": ingress, "seatalk_media_errors": media_errors},
+            raw_message={
+                "payload": payload,
+                "ingress": ingress,
+                "seatalk_account_id": self.account_id,
+                "seatalk_media_errors": media_errors,
+            },
             media_urls=media_urls,
             media_types=media_types,
             media_errors=media_errors,
@@ -473,6 +485,7 @@ class SeaTalkEventDispatcher:
             message_type=message_type,
             source=first.source,
             raw_message={
+                "seatalk_account_id": first.raw_message.get("seatalk_account_id"),
                 "seatalk_events": [part.raw_message for part in parts],
                 "seatalk_media_errors": media_errors,
             },
@@ -504,10 +517,13 @@ class SeaTalkEventDispatcher:
             source.thread_id or "",
         ])
 
+    def _account_chat_id(self, chat_id: str) -> str:
+        if not self.account_id:
+            return chat_id
+        return f"{self.account_id}:{chat_id}"
+
     def _dm_sender_allowed(self, employee_code: str, email: str | None) -> bool:
         if self._dm_policy == "open":
-            return True
-        if self._dm_policy == "pairing":
             return True
         return _sender_in_allowlist(employee_code, email, self._allowlist)
 
