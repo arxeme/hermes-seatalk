@@ -1042,6 +1042,7 @@ def _seatalk_setup_wizard() -> None:
         prompt_choice,
         save_config,
     )
+    from hermes_cli.config import get_env_value, save_env_value
 
     print_header("SeaTalk")
     print_info("Configure SeaTalk accounts. Values are saved to ~/.hermes/config.yaml.")
@@ -1170,9 +1171,29 @@ def _seatalk_setup_wizard() -> None:
     )
     account["processing_indicator"] = "off" if processing_indicator_choice == 1 else "typing"
 
+    home_channel = prompt(
+        "SeaTalk home channel target (optional)",
+        default=str(get_env_value("SEATALK_HOME_CHANNEL") or ""),
+    )
+    home_channel_thread_id = prompt(
+        "SeaTalk home channel thread id (optional)",
+        default=str(get_env_value("SEATALK_HOME_CHANNEL_THREAD_ID") or ""),
+    )
+    home_channel_name = prompt(
+        "SeaTalk home channel display name",
+        default=str(get_env_value("SEATALK_HOME_CHANNEL_NAME") or "SeaTalk Home"),
+    )
+    for key, value in (
+        ("SEATALK_HOME_CHANNEL", home_channel.strip()),
+        ("SEATALK_HOME_CHANNEL_THREAD_ID", home_channel_thread_id.strip()),
+        ("SEATALK_HOME_CHANNEL_NAME", home_channel_name.strip()),
+    ):
+        save_env_value(key, value)
+        os.environ[key] = value
+
     save_config(raw_config)
     print_success("SeaTalk account configuration saved to ~/.hermes/config.yaml")
-    print_info("Set the SeaTalk home channel with /sethome or SEATALK_HOME_CHANNEL in ~/.hermes/.env.")
+    print_success("SeaTalk home channel configuration saved to ~/.hermes/.env")
     print_info("Restart the gateway for changes to take effect: hermes gateway restart")
 
 
