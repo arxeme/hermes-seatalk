@@ -25,6 +25,8 @@
 - W2-07 出站 account 选择与 Hermes patch：PASS
 - W2-08 Setup wizard、文档与发布边界：PASS
 - W2-09 自动化测试与回归收敛：PASS
+- W2-10 OpenClaw 消息解析对齐：PASS
+- W2-11 SeaTalk 工具多帐号支持：PASS
 
 待验证：
 
@@ -764,6 +766,117 @@ event_has_seatalk_challenge=true
 | env、registry、monkey patch 状态在测试间隔离 | MET | T2-09-02 到 T2-09-04 |
 | Phase 1 单帐号路径在 `default` account 下可继续工作 | MET | T2-09-05 |
 | E2E runbook 增补多 account 手工验证步骤 | MET | T2-09-07 |
+
+### W2-10 OpenClaw 消息解析对齐
+
+执行命令：
+
+```bash
+PYTHONPATH=/Users/yuy/Work/go/gitlab.garena.com/ai-agent/voyager/openclaw/hermes-seatalk:/Users/yuy/Work/project/ai-study/ref/hermes-agent \
+  /Users/yuy/Work/project/ai-study/ref/hermes-agent/.venv/bin/python -m pytest \
+  tests/test_w06_dispatcher.py -v
+```
+
+执行结果：
+
+```text
+collected 12 items
+
+tests/test_w06_dispatcher.py::test_t06_01_webhook_relay_isomorphic PASSED
+tests/test_w06_dispatcher.py::test_t06_02_session_key_stable PASSED
+tests/test_w06_dispatcher.py::test_t06_03_dedup PASSED
+tests/test_w06_dispatcher.py::test_t06_04_debounce_merge PASSED
+tests/test_w06_dispatcher.py::test_t06_05_quoted_message PASSED
+tests/test_w06_dispatcher.py::test_t06_06_attachment_failure_degrades PASSED
+tests/test_w06_dispatcher.py::test_t06_07_forwarded_includes_media PASSED
+tests/test_w06_dispatcher.py::test_t06_08_forwarded_sender_prefix PASSED
+tests/test_w06_dispatcher.py::test_t06_09_forwarded_nested_array PASSED
+tests/test_w06_dispatcher.py::test_t06_10_quoted_dedup_same_id_in_buffer PASSED
+tests/test_w06_dispatcher.py::test_t06_11_quoted_no_dedup_different_ids PASSED
+tests/test_w06_dispatcher.py::test_t06_12_media_retry_succeeds_on_second_attempt PASSED
+
+12 passed in 0.24s
+```
+
+| 用例 | 结果 | 验证内容 | 证据 |
+| --- | --- | --- | --- |
+| T2-10-01 forwarded 媒体不丢失 | PASS | 转发消息中 image 的 media_urls / media_types 正确返回 | `test_t06_07_forwarded_includes_media` |
+| T2-10-02 forwarded 发送者前缀 | PASS | sender 字段存在时文本行以 `{sender_name}: ` 开头 | `test_t06_08_forwarded_sender_prefix` |
+| T2-10-03 forwarded 嵌套数组展开 | PASS | content 含 list-of-list 时递归展开，不崩溃也不丢内容 | `test_t06_09_forwarded_nested_array` |
+| T2-10-05 quoted 去重 同 buffer 两条消息引用同 id | PASS | 同 debounce 窗口内同一 quoted_id 只出现一次 | `test_t06_10_quoted_dedup_same_id_in_buffer` |
+| T2-10-06 quoted 不去重 不同 id | PASS | 不同 quoted_id 两段引用文本均出现 | `test_t06_11_quoted_no_dedup_different_ids` |
+| T2-10-07 媒体下载重试成功 | PASS | 第一次失败第二次成功时 media_urls 非空，media_errors 为空 | `test_t06_12_media_retry_succeeds_on_second_attempt` |
+| T2-10-08 媒体下载两次均失败 | PASS | 两次均失败时行为与修改前一致（media_urls 为空，media_errors 有内容）| `test_t06_06_attachment_failure_degrades`（回归） |
+| T2-10-09 现有 quoted 测试回归 | PASS | 单条消息引用时 event.text 格式不变 | `test_t06_05_quoted_message`（回归） |
+
+完成条件核对：
+
+| 完成条件 | 结果 | 证据 |
+| --- | --- | --- |
+| 转发消息媒体 urls 正确返回（不丢失）| MET | T2-10-01 |
+| forwarded item 有 sender 时前缀 `{sender_name}: ` | MET | T2-10-02 |
+| content 含嵌套列表时递归展开 | MET | T2-10-03 |
+| 同 debounce 窗口同一 quoted_id 只出现一次 | MET | T2-10-05 |
+| 媒体下载失败后自动重试一次 | MET | T2-10-07 |
+| 现有 quoted 和 media 测试保持 PASS | MET | T2-10-08、T2-10-09 |
+
+### W2-11 SeaTalk 工具多帐号支持
+
+执行命令：
+
+```bash
+PYTHONPATH=/Users/yuy/Work/go/gitlab.garena.com/ai-agent/voyager/openclaw/hermes-seatalk:/Users/yuy/Work/project/ai-study/ref/hermes-agent \
+  /Users/yuy/Work/project/ai-study/ref/hermes-agent/.venv/bin/python -m pytest \
+  tests/test_w11_seatalk_tools.py -v
+```
+
+执行结果：
+
+```text
+collected 28 items
+
+tests/test_w11_seatalk_tools.py::test_t11_01_schema_name_and_required PASSED
+tests/test_w11_seatalk_tools.py::test_t11_02_schema_action_enum PASSED
+tests/test_w11_seatalk_tools.py::test_t11_03_schema_has_all_parameter_fields PASSED
+... (全部通过)
+tests/test_w11_seatalk_tools.py::test_t11_72_schema_account_id_not_required PASSED
+tests/test_w11_seatalk_tools.py::test_t11_73_account_id_passed_to_get_client PASSED
+tests/test_w11_seatalk_tools.py::test_t11_74_no_account_id_passes_none_to_get_client PASSED
+tests/test_w11_seatalk_tools.py::test_t11_75_unknown_account_id_returns_error PASSED
+
+28 passed in 0.24s
+```
+
+| 用例 | 结果 | 验证内容 | 证据 |
+| --- | --- | --- | --- |
+| T2-11-01 schema 含 account_id 字段 | PASS | `account_id` 在 properties 中，不在 required 中 | `test_t11_72_schema_account_id_not_required`、`test_t11_03_schema_has_all_parameter_fields` |
+| T2-11-02 account_id 传给 get_client | PASS | handler 将 `args["account_id"]` 以 `account_id=` 关键字传给 get_client | `test_t11_73_account_id_passed_to_get_client` |
+| T2-11-03 unknown account_id 返回 error | PASS | get_client 返回 None 时 handler 返回含 `"error"` 的 JSON | `test_t11_75_unknown_account_id_returns_error` |
+| T2-11-04 无 account_id 默认行为 | PASS | 不传 account_id 时以 `account_id=None` 调用 get_client | `test_t11_74_no_account_id_passes_none_to_get_client` |
+
+完成条件核对：
+
+| 完成条件 | 结果 | 证据 |
+| --- | --- | --- |
+| `account_id` 在 schema 中且不在 required | MET | T2-11-01 |
+| handler 将 account_id 传给 client getter | MET | T2-11-02 |
+| account_id 不存在时返回错误 JSON | MET | T2-11-03 |
+| 不指定 account_id 时回退默认行为 | MET | T2-11-04 |
+
+### Batch 7 回归（W2-10 + W2-11 + 全量）
+
+执行命令：
+
+```bash
+PYTHONPATH=/Users/yuy/Work/go/gitlab.garena.com/ai-agent/voyager/openclaw/hermes-seatalk:/Users/yuy/Work/project/ai-study/ref/hermes-agent \
+  /Users/yuy/Work/project/ai-study/ref/hermes-agent/.venv/bin/python -m pytest -q
+```
+
+执行结果：
+
+```text
+214 passed in 1.30s
+```
 
 ## 5. 人工复核（可选）
 

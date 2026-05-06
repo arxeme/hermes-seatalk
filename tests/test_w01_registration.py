@@ -18,9 +18,13 @@ SEATALK_ENV = [
 class FakeContext:
     def __init__(self):
         self.platforms = []
+        self.tools = []
 
     def register_platform(self, **kwargs):
         self.platforms.append(kwargs)
+
+    def register_tool(self, **kwargs):
+        self.tools.append(kwargs)
 
 
 def _clear_env(monkeypatch):
@@ -189,3 +193,36 @@ def test_t01_10_register_is_repeatable(monkeypatch):
     adapter.register(ctx)
 
     assert [entry["name"] for entry in ctx.platforms] == ["seatalk"]
+    assert len(ctx.tools) == 1
+
+
+def test_t01_11_seatalk_tool_registered(monkeypatch):
+    _clear_env(monkeypatch)
+    _set_aiohttp_available(monkeypatch)
+    _set_config_file_extra(monkeypatch, accounts={"default": _relay_account()})
+
+    ctx = FakeContext()
+    adapter.register(ctx)
+
+    assert len(ctx.tools) == 1
+    tool = ctx.tools[0]
+    assert tool["name"] == "seatalk"
+    assert tool["toolset"] == "seatalk-platform"
+    assert tool["is_async"] is True
+    assert callable(tool["handler"])
+
+
+def test_t01_12_seatalk_tool_skipped_without_register_tool(monkeypatch):
+    _clear_env(monkeypatch)
+    _set_aiohttp_available(monkeypatch)
+
+    class MinimalContext:
+        def __init__(self):
+            self.platforms = []
+        def register_platform(self, **kwargs):
+            self.platforms.append(kwargs)
+
+    ctx = MinimalContext()
+    adapter.register(ctx)
+
+    assert len(ctx.platforms) == 1

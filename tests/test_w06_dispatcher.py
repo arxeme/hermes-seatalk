@@ -188,3 +188,188 @@ async def test_t06_06_attachment_failure_degrades(monkeypatch):
     assert event.text == "<media:image>"
     assert event.media_urls == []
     assert "download failed" in event.raw_message["seatalk_media_errors"][0]
+
+
+# ── Forwarded messages ────────────────────────────────────────────────────────
+
+def _forwarded_payload(event_id="event-1", items=None):
+    payload = _dm_payload(event_id=event_id, text="")
+    payload["event"]["message"] = {
+        "message_id": f"msg-{event_id}",
+        "tag": "combined_forwarded_chat_history",
+        "combined_forwarded_chat_history": {
+            "content": items or [],
+        },
+    }
+    return payload
+
+
+@pytest.mark.asyncio
+async def test_t06_07_forwarded_includes_media(monkeypatch):
+    """Media from forwarded items must be included in event media_urls."""
+    client = FakeClient()
+    client.download_error = None  # disable auto-raise
+
+    download_calls: list[str] = []
+
+    async def _download(url):
+        download_calls.append(url)
+        return PNG_BYTES, "image/png"
+
+    client.download_media = _download
+
+    fake_adapter = FakeAdapter()
+    items = [{"tag": "image", "image": {"content": "https://openapi.seatalk.io/media/img-1"}}]
+    payload = _forwarded_payload(items=items)
+
+    await _dispatcher(fake_adapter, client).dispatch(payload, "webhook")
+
+    event = fake_adapter.events[0]
+    assert event.media_urls != [], "media_urls should not be empty for forwarded image"
+    assert "image" in event.media_types
+
+
+@pytest.mark.asyncio
+async def test_t06_08_forwarded_sender_prefix(monkeypatch):
+    """Each forwarded item with a sender field gets a 'SenderName: ' prefix."""
+    fake_adapter = FakeAdapter()
+    items = [
+        {
+            "tag": "text",
+            "text": {"plain_text": "hello from alice"},
+            "sender": {"employee_code": "EmpAlice", "email": "alice@example.com"},
+        },
+        {
+            "tag": "text",
+            "text": {"plain_text": "hi from bob"},
+            "sender": {"employee_code": "EmpBob"},
+        },
+    ]
+    payload = _forwarded_payload(items=items)
+
+    await _dispatcher(fake_adapter).dispatch(payload, "webhook")
+
+    event = fake_adapter.events[0]
+    assert "EmpAlice (alice@example.com): hello from alice" in event.text
+    assert "EmpBob: hi from bob" in event.text
+
+
+@pytest.mark.asyncio
+async def test_t06_09_forwarded_nested_array(monkeypatch):
+    """content list may contain nested lists; they should be recursively expanded."""
+    fake_adapter = FakeAdapter()
+    inner_item = {"tag": "text", "text": {"plain_text": "nested text"}}
+    items = [[inner_item]]  # list-of-list
+    payload = _forwarded_payload(items=items)
+
+    await _dispatcher(fake_adapter).dispatch(payload, "webhook")
+
+    event = fake_adapter.events[0]
+    assert "nested text" in event.text
+
+
+@pytest.mark.asyncio
+async def test_t06_10_quoted_dedup_same_id_in_buffer(monkeypatch):
+    """Two messages in same debounce window quoting the same id → quoted text appears once."""
+    client = FakeClient()
+    client.quoted["q1"] = {
+        "tag": "text",
+        "text": {"plain_text": "the quote"},
+        "sender": {"employee_code": "Sender"},
+    }
+
+    fake_adapter = FakeAdapter()
+    dispatcher = SeaTalkEventDispatcher(
+        adapter=fake_adapter,
+        client=client,
+        app_id="app-id",
+        dm_policy="open",
+        debounce_idle_seconds=60,
+        debounce_max_seconds=60,
+    )
+
+    p1 = _dm_payload(event_id="ev-1", text="reply1")
+    p1["event"]["message"]["quoted_message_id"] = "q1"
+    p2 = _dm_payload(event_id="ev-2", text="reply2")
+    p2["event"]["message"]["quoted_message_id"] = "q1"
+
+    await dispatcher.dispatch(p1, "webhook")
+    await dispatcher.dispatch(p2, "webhook")
+    await dispatcher.flush_all()
+
+    assert len(fake_adapter.events) == 1
+    event = fake_adapter.events[0]
+    # The quoted text block should appear exactly once
+    assert event.text.count("[Quoted from Sender: the quote]") == 1
+    assert "reply1" in event.text
+    assert "reply2" in event.text
+
+
+@pytest.mark.asyncio
+async def test_t06_11_quoted_no_dedup_different_ids(monkeypatch):
+    """Two messages with different quoted_message_ids → both quoted texts appear."""
+    client = FakeClient()
+    client.quoted["q1"] = {
+        "tag": "text",
+        "text": {"plain_text": "first quote"},
+        "sender": {"employee_code": "S1"},
+    }
+    client.quoted["q2"] = {
+        "tag": "text",
+        "text": {"plain_text": "second quote"},
+        "sender": {"employee_code": "S2"},
+    }
+
+    fake_adapter = FakeAdapter()
+    dispatcher = SeaTalkEventDispatcher(
+        adapter=fake_adapter,
+        client=client,
+        app_id="app-id",
+        dm_policy="open",
+        debounce_idle_seconds=60,
+        debounce_max_seconds=60,
+    )
+
+    p1 = _dm_payload(event_id="ev-1", text="reply1")
+    p1["event"]["message"]["quoted_message_id"] = "q1"
+    p2 = _dm_payload(event_id="ev-2", text="reply2")
+    p2["event"]["message"]["quoted_message_id"] = "q2"
+
+    await dispatcher.dispatch(p1, "webhook")
+    await dispatcher.dispatch(p2, "webhook")
+    await dispatcher.flush_all()
+
+    event = fake_adapter.events[0]
+    assert "[Quoted from S1: first quote]" in event.text
+    assert "[Quoted from S2: second quote]" in event.text
+
+
+@pytest.mark.asyncio
+async def test_t06_12_media_retry_succeeds_on_second_attempt(monkeypatch):
+    """Media download fails on first attempt but succeeds on second → media in result."""
+    client = FakeClient()
+    attempt_count = {"n": 0}
+
+    async def _flaky_download(url):
+        attempt_count["n"] += 1
+        if attempt_count["n"] == 1:
+            raise RuntimeError("transient error")
+        return PNG_BYTES, "image/png"
+
+    client.download_media = _flaky_download
+    client.download_error = None
+
+    fake_adapter = FakeAdapter()
+    payload = _dm_payload(event_id="event-1", text="")
+    payload["event"]["message"] = {
+        "message_id": "msg-media",
+        "tag": "image",
+        "image": {"content": "https://openapi.seatalk.io/media/image-1"},
+    }
+
+    await _dispatcher(fake_adapter, client).dispatch(payload, "webhook")
+
+    event = fake_adapter.events[0]
+    assert event.media_urls != [], "media should be present after successful retry"
+    assert event.raw_message["seatalk_media_errors"] == []
+    assert attempt_count["n"] == 2

@@ -32,6 +32,7 @@ except Exception:  # pragma: no cover - lets the plugin import outside Hermes.
         raw_response: Any = None
         retryable: bool = False
 
+from .tools import register_seatalk_tool
 from .client import (
     SeaTalkError,
     SeaTalkOpenAPIClient,
@@ -1368,4 +1369,5 @@ def register(ctx: Any) -> None:
         emoji="💬",
         platform_hint=_SEATALK_PLATFORM_HINT,
     )
+    register_seatalk_tool(ctx)
     setattr(ctx, "_seatalk_platform_registered", True)

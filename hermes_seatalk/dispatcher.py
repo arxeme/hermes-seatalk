@@ -260,8 +260,6 @@ class SeaTalkEventDispatcher:
         reply_to_id, reply_to_text, quoted_media, quoted_types = await self._resolve_quoted(message)
         media_urls.extend(quoted_media)
         media_types.extend(quoted_types)
-        if reply_to_text:
-            text = f"{reply_to_text}\n{text}" if text else reply_to_text
         if not text and not media_urls:
             logger.info("SeaTalk empty DM event dropped")
             return None
@@ -340,8 +338,6 @@ class SeaTalkEventDispatcher:
         reply_to_id, reply_to_text, quoted_media, quoted_types = await self._resolve_quoted(message)
         media_urls.extend(quoted_media)
         media_types.extend(quoted_types)
-        if reply_to_text:
-            text = f"{reply_to_text}\n{text}" if text else reply_to_text
         if not text and not media_urls:
             logger.info("SeaTalk empty group event dropped: channel=%s", chat_id)
             return None
@@ -397,15 +393,47 @@ class SeaTalkEventDispatcher:
                 return placeholder, [], [], [f"{tag}: {exc}"]
         if tag == "combined_forwarded_chat_history":
             content = message.get("combined_forwarded_chat_history")
-            lines: list[str] = []
             if isinstance(content, dict):
-                for item in content.get("content") or []:
-                    if isinstance(item, dict):
-                        text, _, _, _ = await self._resolve_message_content(item)
-                        if text:
-                            lines.append(text)
-            return ("[Forwarded messages]\n" + "\n".join(lines)).strip(), [], [], []
+                items = content.get("content") or []
+                if isinstance(items, list):
+                    lines, fwd_urls, fwd_types, fwd_errs = await self._resolve_forwarded_items(items)
+                    fwd_text = ("[Forwarded messages]\n" + "\n".join(lines)).strip() if lines else "[Forwarded messages]"
+                    return fwd_text, fwd_urls, fwd_types, fwd_errs
+            return "[Forwarded messages]", [], [], []
         return f"<unsupported:{tag or 'unknown'}>", [], [], []
+
+    async def _resolve_forwarded_items(
+        self,
+        items: list[Any],
+    ) -> tuple[list[str], list[str], list[str], list[str]]:
+        lines: list[str] = []
+        media_urls: list[str] = []
+        media_types: list[str] = []
+        media_errors: list[str] = []
+        for item in items:
+            if isinstance(item, list):
+                sub_lines, sub_urls, sub_types, sub_errs = await self._resolve_forwarded_items(item)
+                lines.extend(sub_lines)
+                media_urls.extend(sub_urls)
+                media_types.extend(sub_types)
+                media_errors.extend(sub_errs)
+                continue
+            if not isinstance(item, dict):
+                continue
+            sender = item.get("sender")
+            sender_prefix = ""
+            if isinstance(sender, dict):
+                code = _str_or_none(sender.get("employee_code")) or "unknown"
+                email = _normalize_email(sender.get("email"))
+                sender_name = _user_name(code, email)
+                sender_prefix = f"{sender_name}: "
+            text, item_urls, item_types, item_errs = await self._resolve_message_content(item)
+            if text:
+                lines.append(f"{sender_prefix}{text}")
+            media_urls.extend(item_urls)
+            media_types.extend(item_types)
+            media_errors.extend(item_errs)
+        return lines, media_urls, media_types, media_errors
 
     async def _resolve_quoted(self, message: dict[str, Any]) -> tuple[str | None, str | None, list[str], list[str]]:
         quoted_id = _str_or_none(message.get("quoted_message_id"))
@@ -439,7 +467,16 @@ class SeaTalkEventDispatcher:
         download = getattr(self.client, "download_media", None)
         if not download:
             raise RuntimeError("SeaTalk client does not support media download")
-        raw, content_type = await download(url)
+        last_exc: Exception | None = None
+        for _attempt in range(2):
+            try:
+                raw, content_type = await download(url)
+                break
+            except Exception as exc:  # noqa: BLE001
+                last_exc = exc
+                logger.debug("SeaTalk media download attempt failed, retrying: %s", exc)
+        else:
+            raise last_exc  # type: ignore[misc]
         ext = Path(parsed.path).suffix or _extension_from_content_type(content_type)
         if tag == "image":
             return cache_image_from_bytes(raw, ext or ".jpg"), "image"
@@ -471,7 +508,28 @@ class SeaTalkEventDispatcher:
         if not parts:
             return
         first = parts[0]
-        text = "\n".join(part.text for part in parts if part.text).strip()
+
+        # Collect unique quoted texts across all parts (dedup by message id).
+        seen_quoted_ids: set[str] = set()
+        quoted_texts: list[str] = []
+        first_reply_to_id: str | None = None
+        first_reply_to_text: str | None = None
+        for part in parts:
+            if part.reply_to_message_id and part.reply_to_message_id not in seen_quoted_ids:
+                seen_quoted_ids.add(part.reply_to_message_id)
+                if first_reply_to_id is None:
+                    first_reply_to_id = part.reply_to_message_id
+                    first_reply_to_text = part.reply_to_text
+                if part.reply_to_text:
+                    quoted_texts.append(part.reply_to_text)
+
+        raw_text = "\n".join(part.text for part in parts if part.text).strip()
+        if quoted_texts:
+            prefix = "\n".join(quoted_texts)
+            text = f"{prefix}\n{raw_text}" if raw_text else prefix
+        else:
+            text = raw_text
+
         media_urls: list[str] = []
         media_types: list[str] = []
         media_errors: list[str] = []
@@ -492,8 +550,8 @@ class SeaTalkEventDispatcher:
             message_id=parts[-1].message_id,
             media_urls=media_urls,
             media_types=media_types,
-            reply_to_message_id=first.reply_to_message_id,
-            reply_to_text=first.reply_to_text,
+            reply_to_message_id=first_reply_to_id,
+            reply_to_text=first_reply_to_text,
         )
         if self.emit is not None:
             result = self.emit(event)

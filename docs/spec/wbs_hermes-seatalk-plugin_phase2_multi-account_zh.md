@@ -436,3 +436,63 @@ home channel 交还 Hermes env 机制。
 | setup wizard accounts 管理 | W2-08 |
 | publish branch runtime 边界 | W2-08 |
 | 自动化与联调验证 | W2-09 |
+| forwarded 消息嵌套数组 / 媒体 / 发送者前缀 | W2-10 |
+| quoted 消息去重（同窗口多次引用同一 message_id）| W2-10 |
+| 媒体下载一次重试 | W2-10 |
+| seatalk 工具多帐号 account_id 参数 | W2-11 |
+
+---
+
+追加任务（OpenClaw 对齐与工具增强）
+
+| ID | 任务 | 依赖 | 执行方式 | 覆盖范围 | 验收要点 |
+| --- | --- | --- | --- | --- | --- |
+| W2-10 | OpenClaw 消息解析对齐 | W2-09 | AFK | forwarded 嵌套数组 + 媒体 + 发送者前缀；quoted 引用去重；媒体下载一次重试 | forwarded 媒体不丢失；嵌套数组递归处理；同 debounce 窗口同一 quoted_id 只出现一次；媒体下载失败后自动重试一次 |
+| W2-11 | SeaTalk 工具多帐号支持 | W2-10 | AFK | seatalk tool schema 增加可选 `account_id`；`_get_seatalk_tool_client` 支持按 account_id 选择 runtime | 指定 account_id 时使用对应 account 的 client；account_id 不存在时返回错误 JSON；不指定时保持默认 account 行为 |
+
+### W2-10 OpenClaw 消息解析对齐
+
+目标：使 hermes-seatalk 的入站消息解析与 openclaw-seatalk 在转发消息、引用去重和媒体重试行为上对齐。
+
+交付物：
+
+- `_resolve_forwarded_items(items)` 新方法：递归处理 `content` 列表中的嵌套数组，包含媒体下载和发送者前缀。
+- 更新 `_resolve_message_content` 中的 `combined_forwarded_chat_history` 分支，使用新方法并返回媒体。
+- `_emit_parts` 改为追踪 `seen_quoted_ids`，同 debounce 窗口内相同 `quoted_message_id` 的 reply_to_text 只输出一次。
+- `_normalize_dm` / `_normalize_group` 不再直接将 `reply_to_text` 拼入 `text`，由 `_emit_parts` 负责最终拼接。
+- `_download_media` 在第一次失败后自动重试一次。
+
+完成条件：
+
+- 转发消息中含 image/file/video 时，media_urls / media_types 正确返回（不丢失）。
+- 转发消息 `content` 为列表的每个 dict 项，若有 `sender` 字段则前缀 `{sender_name}: `。
+- `content` 含嵌套列表（list of list）时递归展开，不崩溃也不丢弃内容。
+- 同一 debounce 窗口内两条消息引用相同 `quoted_message_id` 时，最终 `event.text` 中 quoted 文本只出现一次。
+- 媒体下载第一次抛出非 ValueError 异常时自动重试一次；第二次失败则进入 media_errors。
+- 现有测试 `test_t06_05_quoted_message`、`test_t06_06_attachment_failure_degrades` 保持通过。
+
+验证方式：
+
+- `tests/test_w06_dispatcher.py` 追加 forwarded 媒体、发送者前缀、嵌套数组、quoted 去重、媒体重试测试。
+
+### W2-11 SeaTalk 工具多帐号支持
+
+目标：`seatalk` tool 支持通过可选 `account_id` 参数指定调用哪个 SeaTalk account 的 client。
+
+交付物：
+
+- `SEATALK_TOOL_SCHEMA` 中追加可选 `account_id` string 参数。
+- `_get_seatalk_tool_client(account_id=None)` 支持按 account_id 查找对应 runtime client。
+- `make_seatalk_tool_handler` 的 handler 将 `args.get("account_id")` 传给 client getter。
+- 可注入 get_client 签名更新为接受 `account_id=None` 关键字参数，保持单元测试可用。
+
+完成条件：
+
+- 指定已存在 account_id 时使用对应 account runtime client。
+- 指定不存在 account_id 时 client getter 返回 None，handler 返回含 `"error"` 的 JSON。
+- 不指定 account_id 时回退到 default account，行为与 W2-09 之前一致。
+- `tests/test_w11_seatalk_tools.py` 追加 account_id 相关测试。
+
+验证方式：
+
+- `tests/test_w11_seatalk_tools.py` 追加 schema 字段验证、account_id 传递验证、account 不存在错误测试。
