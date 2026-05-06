@@ -103,7 +103,7 @@ async def test_t06_01_webhook_relay_isomorphic(monkeypatch):
 @pytest.mark.asyncio
 @pytest.mark.requires_hermes
 async def test_t06_02_session_key_stable(monkeypatch):
-    from gateway.session import build_session_key
+    session = pytest.importorskip("gateway.session")
 
     fake_adapter = FakeAdapter()
     dispatcher = _dispatcher(fake_adapter)
@@ -112,7 +112,7 @@ async def test_t06_02_session_key_stable(monkeypatch):
     await dispatcher.dispatch(_group_payload(event_id="event-2"), "relay")
 
     keys = [
-        build_session_key(event.source, group_sessions_per_user=True, thread_sessions_per_user=False)
+        session.build_session_key(event.source, group_sessions_per_user=True, thread_sessions_per_user=False)
         for event in fake_adapter.events
     ]
     assert keys == [keys[0], keys[0]]

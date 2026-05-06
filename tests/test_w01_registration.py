@@ -10,6 +10,7 @@ SEATALK_ENV = [
     "SEATALK_APP_SECRET",
     "SEATALK_SIGNING_SECRET",
     "HERMES_SEATALK_ALLOWED_USERS",
+    "HERMES_SEATALK_ALLOW_ALL",
 ]
 
 
@@ -26,11 +27,8 @@ def _clear_env(monkeypatch):
         monkeypatch.delenv(name, raising=False)
 
 
-def _set_base_env(monkeypatch, mode="relay"):
-    del mode
+def _set_aiohttp_available(monkeypatch):
     monkeypatch.setitem(sys.modules, "aiohttp", ModuleType("aiohttp"))
-    monkeypatch.setenv("SEATALK_APP_SECRET", "app-secret")
-    monkeypatch.setenv("SEATALK_SIGNING_SECRET", "signing-secret")
 
 
 def _set_config_file_extra(monkeypatch, **extra):
@@ -38,19 +36,38 @@ def _set_config_file_extra(monkeypatch, **extra):
 
 
 def _config(**extra):
-    return SimpleNamespace(extra=extra)
+    return SimpleNamespace(enabled=True, extra=extra)
+
+
+def _relay_account(**overrides):
+    account = {
+        "enabled": True,
+        "app_id": "app-id",
+        "app_secret": "app-secret",
+        "signing_secret": "signing-secret",
+        "mode": "relay",
+        "relay_url": "wss://relay.example/ws",
+    }
+    account.update(overrides)
+    return account
+
+
+def _webhook_account(**overrides):
+    account = {
+        "enabled": True,
+        "app_id": "app-id",
+        "app_secret": "app-secret",
+        "signing_secret": "signing-secret",
+        "mode": "webhook",
+    }
+    account.update(overrides)
+    return account
 
 
 def test_t01_01_minimal_relay_config_registers_platform(monkeypatch):
     _clear_env(monkeypatch)
-    _set_base_env(monkeypatch, mode="relay")
-    _set_config_file_extra(
-        monkeypatch,
-        app_id="app-id",
-        mode="relay",
-        relay_url="wss://relay.example/ws",
-        allow_from=["alice@example.com"],
-    )
+    _set_aiohttp_available(monkeypatch)
+    _set_config_file_extra(monkeypatch, accounts={"default": _relay_account()})
 
     ctx = FakeContext()
     adapter.register(ctx)
@@ -62,146 +79,108 @@ def test_t01_01_minimal_relay_config_registers_platform(monkeypatch):
     assert entry["check_fn"] is adapter.check_seatalk_requirements
     assert entry["validate_config"] is adapter._validate_seatalk_config
     assert entry["is_connected"] is adapter._is_seatalk_connected
-    assert entry["required_env"] == adapter.REQUIRED_ENV
-    assert entry["allowed_users_env"] == "HERMES_SEATALK_ALLOWED_USERS"
-    assert "allow_all_env" not in entry
+    assert entry["required_env"] == []
+    assert "allowed_users_env" not in entry
+    assert entry["allow_all_env"] == "HERMES_SEATALK_ALLOW_ALL"
     assert entry["max_message_length"] == 4000
-    assert adapter.os.environ["HERMES_SEATALK_ALLOWED_USERS"] == "alice@example.com"
+    assert adapter.os.environ["HERMES_SEATALK_ALLOW_ALL"] == "true"
+    assert "HERMES_SEATALK_ALLOWED_USERS" not in adapter.os.environ
 
 
 def test_t01_02_missing_credentials_fail(monkeypatch):
     _clear_env(monkeypatch)
-    monkeypatch.setenv("SEATALK_APP_SECRET", "app-secret")
-    _set_config_file_extra(monkeypatch, app_id="app-id", mode="webhook")
+    _set_aiohttp_available(monkeypatch)
+    monkeypatch.setattr(adapter, "_config_file_extra", lambda: (_ for _ in ()).throw(AssertionError("must not read config")))
 
-    assert adapter.check_seatalk_requirements() is False
+    assert adapter.check_seatalk_requirements() is True
     assert adapter._validate_seatalk_config(_config(
-        app_id="app-id",
-        app_secret="app-secret",
-        mode="webhook",
+        accounts={"default": _webhook_account(signing_secret="")},
     )) is False
 
 
 def test_t01_03_relay_url_required_only_for_relay(monkeypatch):
     _clear_env(monkeypatch)
-    _set_base_env(monkeypatch, mode="relay")
-    _set_config_file_extra(monkeypatch, app_id="app-id", mode="relay")
+    _set_aiohttp_available(monkeypatch)
 
-    assert adapter.check_seatalk_requirements() is False
     assert adapter._validate_seatalk_config(_config(
-        app_id="app-id",
-        app_secret="app-secret",
-        signing_secret="signing-secret",
-        mode="relay",
+        accounts={"default": _relay_account(relay_url="")},
     )) is False
-
-    _set_config_file_extra(
-        monkeypatch,
-        app_id="app-id",
-        mode="relay",
-        relay_url="wss://relay.example/ws",
-    )
-    assert adapter.check_seatalk_requirements() is True
     assert adapter._validate_seatalk_config(_config(
-        app_id="app-id",
-        app_secret="app-secret",
-        signing_secret="signing-secret",
-        mode="relay",
-        relay_url="wss://relay.example/ws",
+        accounts={"default": _relay_account()},
     )) is True
 
 
 def test_t01_04_webhook_does_not_require_relay_url(monkeypatch):
     _clear_env(monkeypatch)
-    _set_base_env(monkeypatch, mode="webhook")
-    _set_config_file_extra(monkeypatch, app_id="app-id", mode="webhook")
+    _set_aiohttp_available(monkeypatch)
 
-    assert adapter.check_seatalk_requirements() is True
     assert adapter._validate_seatalk_config(_config(
-        app_id="app-id",
-        app_secret="app-secret",
-        signing_secret="signing-secret",
-        mode="webhook",
+        accounts={"default": _webhook_account()},
     )) is True
 
 
 def test_t01_05_is_connected_matches_validate_config(monkeypatch):
     _clear_env(monkeypatch)
-    _set_base_env(monkeypatch)
-    cfg = _config(
-        app_id="app-id",
-        mode="webhook",
-    )
+    _set_aiohttp_available(monkeypatch)
+    cfg = _config(accounts={"default": _webhook_account()})
 
     assert adapter._is_seatalk_connected(cfg) is adapter._validate_seatalk_config(cfg)
 
 
 def test_t01_06_runtime_health_does_not_affect_connected(monkeypatch):
     _clear_env(monkeypatch)
-    _set_base_env(monkeypatch)
-    cfg = _config(
-        app_id="app-id",
-        mode="webhook",
-    )
+    _set_aiohttp_available(monkeypatch)
+    cfg = _config(accounts={"default": _webhook_account()})
 
     assert adapter._is_seatalk_connected(cfg) is True
 
 
 def test_t01_07_invalid_mode_is_rejected(monkeypatch):
     _clear_env(monkeypatch)
-    _set_base_env(monkeypatch, mode="socket")
-    _set_config_file_extra(monkeypatch, app_id="app-id", mode="socket")
+    _set_aiohttp_available(monkeypatch)
 
-    assert adapter.check_seatalk_requirements() is False
     assert adapter._validate_seatalk_config(_config(
-        app_id="app-id",
-        app_secret="app-secret",
-        signing_secret="signing-secret",
-        mode="socket",
+        accounts={"default": _relay_account(mode="socket")},
     )) is False
 
 
 def test_t01_08_invalid_policy_is_rejected(monkeypatch):
     _clear_env(monkeypatch)
-    _set_base_env(monkeypatch)
+    _set_aiohttp_available(monkeypatch)
 
     assert adapter._validate_seatalk_config(_config(
-        app_id="app-id",
-        mode="webhook",
-        dm_policy="everyone",
+        accounts={"default": _webhook_account(dm_policy="everyone")},
     )) is False
     assert adapter._validate_seatalk_config(_config(
-        app_id="app-id",
-        mode="webhook",
-        group_policy="everyone",
+        accounts={"default": _webhook_account(group_policy="everyone")},
     )) is False
     assert adapter._validate_seatalk_config(_config(
-        app_id="app-id",
-        mode="webhook",
-        processing_indicator="spinner",
+        accounts={"default": _webhook_account(processing_indicator="spinner")},
     )) is False
     assert adapter._validate_seatalk_config(_config(
-        app_id="app-id",
-        mode="webhook",
-        dm_policy="pairing",
-        group_policy="open",
+        accounts={"default": _webhook_account(dm_policy="pairing")},
     )) is False
 
 
-def test_t01_09_group_policy_uses_internal_wildcard(monkeypatch):
+def test_t01_09_register_does_not_write_user_allowlists(monkeypatch):
     _clear_env(monkeypatch)
-    adapter._sync_auth_env_from_extra({
-        "dm_policy": "allowlist",
-        "allow_from": ["alice@example.com"],
-        "group_policy": "open",
-        "group_sender_allow_from": ["alice@example.com"],
-    })
+    _set_aiohttp_available(monkeypatch)
+    _set_config_file_extra(
+        monkeypatch,
+        dm_policy="open",
+        allow_from=["alice@example.com"],
+        accounts={"default": _relay_account()},
+    )
 
-    assert adapter.os.environ["HERMES_SEATALK_ALLOWED_USERS"] == "*"
+    adapter.register(FakeContext())
+
+    assert adapter.os.environ["HERMES_SEATALK_ALLOW_ALL"] == "true"
+    assert "HERMES_SEATALK_ALLOWED_USERS" not in adapter.os.environ
 
 
 def test_t01_10_register_is_repeatable(monkeypatch):
     _clear_env(monkeypatch)
+    _set_aiohttp_available(monkeypatch)
     ctx = FakeContext()
 
     adapter.register(ctx)

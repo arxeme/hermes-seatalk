@@ -16,6 +16,9 @@
 本文用于记录 W-11 真实 SeaTalk 联调验证。W-11 依赖真实 SeaTalk Bot App、真实用户、真实群和可达的 webhook 或 relay 通道，因此不能在离线 pytest 中自动完成。
 
 本文件只记录可复现步骤和结果摘要，不记录 `SEATALK_APP_SECRET`、`SEATALK_SIGNING_SECRET`、access token 或任何截图中的 secret。
+Phase 2 后，SeaTalk credentials 位于 `config.yaml` 的
+`platforms.seatalk.extra.accounts.<account_id>` 下；本 runbook 只记录
+account id、模式和脱敏后的目标类别，不记录 secret 明文。
 
 ## 2. 前置条件
 
@@ -26,6 +29,7 @@
 | Plugin enable | `hermes plugins enable seatalk-platform` 已执行 | PENDING |
 | Gateway restart | enable 和配置变更后已重启 gateway | PENDING |
 | SeaTalk Bot App | 已创建 Bot App，并配置 App ID、App Secret、Signing Secret | PENDING |
+| 多帐号配置 | 至少准备 `default` account；如验证多帐号，额外准备 `staging` 或等价 account | PENDING |
 | 入站模式 | `relay` 或 `webhook` 至少一种真实可用 | PENDING |
 | 授权用户 | 至少一个 allowlist 内用户和一个 allowlist 外用户 | PENDING |
 | 授权群 | 至少一个 allowlist 内群和一个 allowlist 外群 | PENDING |
@@ -34,15 +38,15 @@
 
 | 配置项 | 记录方式 |
 | --- | --- |
-| `SEATALK_APP_ID` | 记录前后 3 位或内部 Bot App 名称，不记录完整 secret |
-| `SEATALK_APP_SECRET` | 只记录已配置，不记录值 |
-| `SEATALK_SIGNING_SECRET` | 只记录已配置，不记录值 |
-| `SEATALK_MODE` | `relay` 或 `webhook` |
-| `SEATALK_RELAY_URL` | relay 模式记录域名和 path，可遮蔽 token/query |
-| `SEATALK_WEBHOOK_*` | webhook 模式记录外部 callback URL 与本地 host/port/path |
-| `SEATALK_ALLOWED_USERS` | 记录测试用户类别，不记录完整用户清单 |
-| `SEATALK_GROUP_ALLOWED_USERS` | 记录测试群类别，不记录敏感群名 |
-| `SEATALK_HOME_CHANNEL` | 记录是否为 DM/group/thread，必要时遮蔽 id |
+| `accounts.<account_id>.app_id` | 记录 account id 和 app id 前后 3 位或内部 Bot App 名称 |
+| `accounts.<account_id>.app_secret` | 只记录已配置，不记录值 |
+| `accounts.<account_id>.signing_secret` | 只记录已配置，不记录值 |
+| `accounts.<account_id>.mode` | `relay` 或 `webhook` |
+| `accounts.<account_id>.relay_url` | relay 模式记录域名和 path，可遮蔽 token/query |
+| `accounts.<account_id>.webhook_*` | webhook 模式记录外部 callback URL 与本地 host/port/path |
+| `accounts.<account_id>.allow_from` | 记录测试用户类别，不记录完整用户清单 |
+| `accounts.<account_id>.group_allow_from` | 记录测试群类别，不记录敏感群名；值为 raw group id |
+| `home_channel_account_id` / `home_channel` | 记录 account id、DM/group/thread 类别，必要时遮蔽 id |
 
 ## 4. 执行步骤
 
@@ -51,10 +55,12 @@
 1. 安装并启用 plugin。
 2. 运行 `hermes gateway setup`。
 3. 在 TUI 中确认 SeaTalk 出现在 messaging platform 菜单。
-4. 录入 common credentials。
-5. 选择 `relay` 或 `webhook` 并录入对应模式的配置。
-6. 重启 gateway。
-7. 执行 `hermes gateway status`。
+4. 创建或编辑 `default` account，录入 app id、app secret、signing secret。
+5. 选择 `relay` 或 `webhook` 并录入该 account 对应模式的配置。
+6. 如需多帐号，重复 setup 或编辑 config，添加第二个 account。
+7. 配置 `home_channel_account_id` / `home_channel`。
+8. 重启 gateway。
+9. 执行 `hermes gateway status`。
 
 预期结果：
 
@@ -106,15 +112,39 @@ send_message(target="seatalk:group/<id>:<thread_id>", message="hello thread")
 - thread 目标不被误解析为 chat id。
 - gateway 日志无 `No live SeaTalk adapter`。
 
+### E-04A 多帐号出站
+
+1. 准备两个 enabled accounts，例如 `default` 和 `staging`。
+2. 使用默认 account 发送：
+
+```bash
+send_message(target="seatalk:EmpABC", message="hello default")
+```
+
+3. 使用 account-qualified target 发送：
+
+```bash
+send_message(target="seatalk:staging:EmpABC", message="hello staging")
+send_message(target="seatalk:staging:group/<id>:<thread_id>", message="hello staging thread")
+```
+
+预期结果：
+
+- 默认 target 使用 `default` account。
+- `staging:` target 使用 staging account 对应 Bot App 发送。
+- `staging:EmpABC` 不被解析为 `chat_id=staging` / `thread_id=EmpABC`。
+
 ### E-05 Home Channel
 
-1. 配置 `SEATALK_HOME_CHANNEL`。
-2. 如需 thread，配置 `SEATALK_HOME_CHANNEL_THREAD_ID`。
+1. 配置 `home_channel_account_id`。
+2. 配置 `home_channel`，group target 使用 `group/<group_id>`。
+3. 如需 thread，配置 `home_channel_thread_id`。
 3. 触发 cron 或 home channel 发送。
 
 预期结果：
 
 - 消息到达 home channel。
+- 多帐号配置下消息由 `home_channel_account_id` 对应 account 发送。
 - thread id 行为符合配置。
 
 ### E-06 未授权用户
@@ -171,6 +201,32 @@ Webhook 模式：
 - 状态变化可观察。
 - 恢复后可继续收发。
 - `is_connected` 不被 runtime health 语义污染。
+
+### E-10 多帐号入站隔离
+
+1. 使用两个 SeaTalk Bot Apps 或等价测试 app，对应两个 enabled accounts。
+2. 分别通过两个 accounts 向 Hermes 发送同一 sender 的 DM。
+3. 分别在两个 accounts 的授权群中发送 group message。
+
+预期结果：
+
+- `source.chat_id` 带 account prefix，例如 `default:EmpABC` /
+  `staging:EmpABC`。
+- `source.user_id` 不带 account prefix。
+- 同一 sender 在不同 accounts 下进入不同 Hermes session。
+- 一个 account 的 allowlist 不影响另一个 account。
+
+### E-11 Shared Webhook Endpoint
+
+1. 配置两个 webhook accounts 使用相同 host/port/path。
+2. 分别在 SeaTalk Bot App 中触发 URL verification。
+3. 分别发送普通 message event。
+
+预期结果：
+
+- challenge 请求签名有效时返回 `seatalk_challenge`。
+- 普通事件按 signing secret 和 `app_id` 路由到正确 account。
+- 普通事件缺少 `app_id` 或 `app_id` 与签名 account 不一致时被拒绝。
 
 ## 5. 证据采集要求
 

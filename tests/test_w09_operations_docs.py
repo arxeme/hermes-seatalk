@@ -28,18 +28,24 @@ def test_t09_02_enable_restart_semantics_documented():
 def test_t09_03_tui_requires_plugin_enable():
     assert "appear in `hermes setup` / `hermes gateway setup` only after" in README_INLINE
     assert "hermes plugins install arxeme/hermes-seatalk --enable" in README
-    assert "does not clone, install, or enable the plugin" in README_INLINE
+    assert "does not clone, install, enable the plugin" in README_INLINE
 
 
 def test_t09_04_setup_wizard_order():
     source = inspect.getsource(adapter._seatalk_setup_wizard)
-    assert source.index("SeaTalk app id") < source.index("SEATALK_APP_SECRET")
-    assert source.index("SEATALK_APP_SECRET") < source.index("SEATALK_SIGNING_SECRET")
-    assert source.index("SEATALK_SIGNING_SECRET") < source.index("SeaTalk connection mode")
+    assert source.index("SeaTalk account id") < source.index("SeaTalk account action")
+    assert source.index("SeaTalk account action") < source.index("SeaTalk app id")
+    assert source.index("SeaTalk app id") < source.index("SeaTalk app secret")
+    assert source.index("SeaTalk app secret") < source.index("SeaTalk signing secret")
+    assert source.index("SeaTalk signing secret") < source.index("SeaTalk connection mode")
     assert source.index("SeaTalk connection mode") < source.index("relay_url")
-    assert source.index("relay_url") < source.index("home_channel")
-    assert source.index("home_channel") < source.index("DM policy")
+    assert source.index("relay_url") < source.index('("home_channel_account_id"')
+    assert source.index('("home_channel_account_id"') < source.index('("home_channel"')
+    assert source.index('("home_channel"') < source.index("DM policy")
     assert source.index("DM policy") < source.index("Group policy")
+    assert "save_env_value" not in source
+    assert "get_env_value" not in source
+    assert '"pairing"' not in source
     assert "SEATALK_ALLOW_ALL_USERS" not in source
     assert "GATEWAY_ALLOW_ALL_USERS" not in source
     assert "allow_all" not in source
@@ -82,4 +88,5 @@ def test_t09_08_troubleshooting_paths_are_documented():
     assert "Static connected state means the required SeaTalk credentials" in README
     assert "Runtime health comes from the running adapter" in README
     assert "gateway logs" in README
-    assert "`~/.hermes/config.yaml` and `~/.hermes/.env`" in README
+    assert "`~/.hermes/config.yaml`" in README
+    assert "Protect this file as a secret-bearing configuration" in README

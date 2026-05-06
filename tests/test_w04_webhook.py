@@ -45,7 +45,11 @@ async def test_t04_01_valid_event_enters_dispatch():
     )
     await server.start()
     try:
-        body = json.dumps({"event_type": "message_from_bot_subscriber", "event": {"x": 1}}).encode()
+        body = json.dumps({
+            "app_id": "app-id",
+            "event_type": "message_from_bot_subscriber",
+            "event": {"x": 1},
+        }).encode()
         async with aiohttp.ClientSession() as session:
             async with session.post(await _url(server), data=body, headers={"Signature": _signature(body)}) as resp:
                 assert resp.status == 200
@@ -54,7 +58,11 @@ async def test_t04_01_valid_event_enters_dispatch():
             if received:
                 break
             await asyncio.sleep(0.01)
-        assert received == [({"event_type": "message_from_bot_subscriber", "event": {"x": 1}}, "webhook")]
+        assert received == [({
+            "app_id": "app-id",
+            "event_type": "message_from_bot_subscriber",
+            "event": {"x": 1},
+        }, "webhook")]
     finally:
         await server.stop()
 
@@ -151,7 +159,7 @@ async def test_t04_05_fast_ack_does_not_wait_for_dispatch():
     )
     await server.start()
     try:
-        body = json.dumps({"event_type": "message_from_bot_subscriber", "event": {}}).encode()
+        body = json.dumps({"app_id": "app-id", "event_type": "message_from_bot_subscriber", "event": {}}).encode()
         async with aiohttp.ClientSession() as session:
             async with session.post(await _url(server), data=body, headers={"Signature": _signature(body)}) as resp:
                 assert resp.status == 200
@@ -165,20 +173,25 @@ async def test_t04_05_fast_ack_does_not_wait_for_dispatch():
 @pytest.mark.requires_hermes
 async def test_t04_06_adapter_webhook_updates_health(monkeypatch):
     client = SimpleNamespace(close=lambda: None)
+    webhook_port = _free_port()
     cfg = SimpleNamespace(extra={
-        "app_id": "app-id",
-        "app_secret": "app-secret",
-        "signing_secret": "signing-secret",
-        "mode": "webhook",
-        "webhook_host": "127.0.0.1",
-        "webhook_port": str(_free_port()),
-        "client": client,
+        "accounts": {
+            "default": {
+                "app_id": "app-id",
+                "app_secret": "app-secret",
+                "signing_secret": "signing-secret",
+                "mode": "webhook",
+                "webhook_host": "127.0.0.1",
+                "webhook_port": str(webhook_port),
+            }
+        },
+        "clients": {"default": client},
     })
     seatalk = adapter.SeaTalkAdapter(cfg)
     assert await seatalk.connect() is True
     try:
         await seatalk._dispatch_event({"event_type": "message_from_bot_subscriber"}, "webhook")
-        assert seatalk.is_connected is True
+        assert getattr(seatalk, "is_connected", getattr(seatalk, "_running", False)) is True
     finally:
         await seatalk.disconnect()
 

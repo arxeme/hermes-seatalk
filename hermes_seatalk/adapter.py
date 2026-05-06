@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -43,28 +45,64 @@ from .coalescer import OutboundCoalescerMap
 from .dispatcher import SeaTalkEventDispatcher
 from .relay import SeaTalkRelayClient
 from .targets import SeaTalkTarget, parse_seatalk_target
-from .webhook import SeaTalkWebhookServer
+from .webhook import SeaTalkWebhookAccount, SeaTalkWebhookServer
 
 
+logger = logging.getLogger(__name__)
 SEATALK_PLATFORM = "seatalk"
 SEATALK_PLUGIN_NAME = "seatalk-platform"
 VALID_MODES = {"relay", "webhook"}
-VALID_DM_POLICIES = {"allowlist", "open", "pairing"}
+VALID_DM_POLICIES = {"allowlist", "open"}
 VALID_GROUP_POLICIES = {"disabled", "allowlist", "open"}
 VALID_PROCESSING_INDICATORS = {"typing", "off"}
-REQUIRED_ENV = [
-    "SEATALK_APP_SECRET",
-    "SEATALK_SIGNING_SECRET",
-]
+REQUIRED_ENV: list[str] = []
 INTERNAL_ALLOWED_USERS_ENV = "HERMES_SEATALK_ALLOWED_USERS"
+INTERNAL_ALLOW_ALL_ENV = "HERMES_SEATALK_ALLOW_ALL"
 MAX_MESSAGE_LENGTH = 4000
 OUTBOUND_COALESCING_IDLE_SECONDS = 1.0
+ACCOUNT_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_.-]*$")
 
 _SEATALK_PLATFORM_HINT = (
     "You are chatting via SeaTalk. Prefer concise plain text. SeaTalk supports "
     "DMs, groups, and group threads; group messages may require mention-based "
     "routing depending on configuration."
 )
+
+
+@dataclass(frozen=True)
+class SeaTalkAccountConfig:
+    account_id: str
+    enabled: bool
+    app_id: str
+    app_secret: str
+    signing_secret: str
+    mode: str
+    relay_url: str = ""
+    webhook_host: str = "0.0.0.0"
+    webhook_port: int = 8080
+    webhook_path: str = "/callback"
+    dm_policy: str = "allowlist"
+    allow_from: tuple[str, ...] = ()
+    group_policy: str = "disabled"
+    group_allow_from: tuple[str, ...] = ()
+    group_sender_allow_from: tuple[str, ...] = ()
+    processing_indicator: str = "typing"
+    media_allow_hosts: tuple[str, ...] = ()
+    outbound_coalescing: bool = True
+
+
+@dataclass
+class SeaTalkAccountRuntime:
+    config: SeaTalkAccountConfig
+    client: Any
+    dispatcher: SeaTalkEventDispatcher
+    coalescers: OutboundCoalescerMap
+    relay_client: SeaTalkRelayClient | None = None
+    relay_monitor_task: asyncio.Task[None] | None = None
+    webhook_server: SeaTalkWebhookServer | None = None
+    state: str = "stopped"
+    auth_failed: bool = False
+    last_error: str | None = None
 
 
 def _extra(config: Any) -> dict[str, Any]:
@@ -98,6 +136,10 @@ def _env_value(name: str) -> str:
     return (os.getenv(name) or "").strip()
 
 
+def _text_value(raw: Any) -> str:
+    return str(raw).strip() if raw is not None else ""
+
+
 def _mode_from_config(config: Any) -> str:
     return _cfg_value(config, "mode").lower() or "webhook"
 
@@ -111,7 +153,12 @@ def _secrets_from_env() -> bool:
 
 
 def _credentials_from_config(config: Any) -> bool:
-    return bool(_cfg_value(config, "app_id") and _mode_from_config(config) and _secrets_from_env())
+    return bool(
+        _cfg_value(config, "app_id")
+        and _cfg_value(config, "app_secret")
+        and _cfg_value(config, "signing_secret")
+        and _cfg_value(config, "mode")
+    )
 
 
 def _webhook_port_from_config(config: Any) -> int | None:
@@ -133,6 +180,12 @@ def _message_id(response: dict[str, Any] | None) -> str | None:
     return None
 
 
+def _account_qualified_target(account_id: str | None, chat_id: str) -> str:
+    if account_id:
+        return f"{account_id}:{chat_id}"
+    return chat_id
+
+
 def _platform_instance() -> Any:
     try:
         return Platform(SEATALK_PLATFORM)
@@ -140,39 +193,148 @@ def _platform_instance() -> Any:
         return type("_SeaTalkPlatform", (), {"value": SEATALK_PLATFORM, "name": "SEATALK"})()
 
 
+def _is_enabled(raw: Any, default: bool = True) -> bool:
+    if isinstance(raw, bool):
+        return raw
+    if raw is None:
+        return default
+    return str(raw).strip().lower() not in {"0", "false", "no", "off"}
+
+
+def _merge_account_config(base: dict[str, Any], account: dict[str, Any]) -> dict[str, Any]:
+    defaults = {key: value for key, value in base.items() if key != "accounts"}
+    merged = dict(defaults)
+    merged.update(account)
+    return merged
+
+
+def _accounts_from_extra(extra: dict[str, Any]) -> dict[str, SeaTalkAccountConfig]:
+    if not isinstance(extra, dict):
+        raise ValueError("SeaTalk extra config must be a mapping")
+    accounts = extra.get("accounts")
+    if not isinstance(accounts, dict) or not accounts:
+        raise ValueError("SeaTalk accounts config is required")
+
+    parsed: dict[str, SeaTalkAccountConfig] = {}
+    seen_app_ids: set[str] = set()
+    for account_id_raw, raw_account in accounts.items():
+        account_id = str(account_id_raw).strip()
+        if not ACCOUNT_ID_RE.fullmatch(account_id):
+            raise ValueError(f"Invalid SeaTalk account id: {account_id_raw!r}")
+        if raw_account is None:
+            raw_account = {}
+        if not isinstance(raw_account, dict):
+            raise ValueError(f"SeaTalk account {account_id} must be a mapping")
+
+        merged = _merge_account_config(extra, raw_account)
+        if not _is_enabled(merged.get("enabled"), True):
+            continue
+
+        config = _build_account_config(account_id, merged)
+        if config.app_id in seen_app_ids:
+            raise ValueError(f"Duplicate SeaTalk app_id: {config.app_id}")
+        seen_app_ids.add(config.app_id)
+        parsed[account_id] = config
+
+    if not parsed:
+        raise ValueError("SeaTalk requires at least one enabled account")
+    return parsed
+
+
+def _build_account_config(account_id: str, data: dict[str, Any]) -> SeaTalkAccountConfig:
+    app_id = _text_value(data.get("app_id"))
+    app_secret = _text_value(data.get("app_secret"))
+    signing_secret = _text_value(data.get("signing_secret"))
+    mode = _text_value(data.get("mode")).lower()
+    if not app_id or not app_secret or not signing_secret or not mode:
+        raise ValueError(f"SeaTalk account {account_id} is missing required credentials or mode")
+    if mode not in VALID_MODES:
+        raise ValueError(f"SeaTalk account {account_id} has invalid mode: {mode}")
+
+    dm_policy = _text_value(data.get("dm_policy")).lower() or "allowlist"
+    if dm_policy not in VALID_DM_POLICIES:
+        raise ValueError(f"SeaTalk account {account_id} has invalid dm_policy: {dm_policy}")
+    group_policy = _text_value(data.get("group_policy")).lower() or "disabled"
+    if group_policy not in VALID_GROUP_POLICIES:
+        raise ValueError(f"SeaTalk account {account_id} has invalid group_policy: {group_policy}")
+    processing_indicator = _text_value(data.get("processing_indicator")).lower() or "typing"
+    if processing_indicator not in VALID_PROCESSING_INDICATORS:
+        raise ValueError(
+            f"SeaTalk account {account_id} has invalid processing_indicator: {processing_indicator}"
+        )
+
+    relay_url = _text_value(data.get("relay_url"))
+    if mode == "relay" and not relay_url:
+        raise ValueError(f"SeaTalk account {account_id} relay_url is required in relay mode")
+
+    webhook_port = _coerce_webhook_port(data.get("webhook_port"))
+    webhook_path = _text_value(data.get("webhook_path")) or "/callback"
+    if mode == "webhook" and webhook_port is None:
+        raise ValueError(f"SeaTalk account {account_id} has invalid webhook_port")
+    if mode == "webhook" and (not webhook_path.startswith("/") or any(ch.isspace() for ch in webhook_path)):
+        raise ValueError(f"SeaTalk account {account_id} has invalid webhook_path")
+
+    group_allow_from = tuple(_csv_list(data.get("group_allow_from")))
+    if any(value.startswith("group/") for value in group_allow_from):
+        raise ValueError("SeaTalk group_allow_from values must be raw group ids without group/ prefix")
+
+    return SeaTalkAccountConfig(
+        account_id=account_id,
+        enabled=True,
+        app_id=app_id,
+        app_secret=app_secret,
+        signing_secret=signing_secret,
+        mode=mode,
+        relay_url=relay_url,
+        webhook_host=_text_value(data.get("webhook_host")) or "0.0.0.0",
+        webhook_port=webhook_port or 8080,
+        webhook_path=webhook_path,
+        dm_policy=dm_policy,
+        allow_from=tuple(_csv_list(data.get("allow_from"))),
+        group_policy=group_policy,
+        group_allow_from=group_allow_from,
+        group_sender_allow_from=tuple(_csv_list(data.get("group_sender_allow_from"))),
+        processing_indicator=processing_indicator,
+        media_allow_hosts=tuple(_csv_list(data.get("media_allow_hosts"))),
+        outbound_coalescing=_is_enabled(data.get("outbound_coalescing"), True),
+    )
+
+
+def _build_all_secrets(accounts: dict[str, SeaTalkAccountConfig]) -> list[str]:
+    values: list[str] = []
+    for account in accounts.values():
+        values.extend([account.app_secret, account.signing_secret])
+    return list(dict.fromkeys(value for value in values if value))
+
+
+def _coerce_webhook_port(raw: Any) -> int | None:
+    if raw in (None, ""):
+        return 8080
+    try:
+        port = int(raw)
+    except (TypeError, ValueError):
+        return None
+    return port if 1 <= port <= 65535 else None
+
+
 def check_seatalk_requirements() -> bool:
-    """Return whether dependencies, secrets, and config.yaml values are present."""
+    """Return whether the plugin's Python dependencies are importable."""
     try:
         import aiohttp  # noqa: F401
     except ImportError:
         return False
-
-    config = type("_SeaTalkConfig", (), {"extra": _config_file_extra()})()
-    return _validate_seatalk_config(config)
+    return True
 
 
 def _validate_seatalk_config(config: Any) -> bool:
     """Validate env/config values enough for Hermes to create the adapter."""
-    if not _credentials_from_config(config):
+    if not _is_enabled(getattr(config, "enabled", None), True):
+        return True
+    try:
+        _accounts_from_extra(_extra(config))
+    except ValueError:
         return False
-
-    mode = _mode_from_config(config)
-    if mode not in VALID_MODES:
-        return False
-    dm_policy = _policy_from_config(config, "dm_policy", "allowlist")
-    if dm_policy not in VALID_DM_POLICIES:
-        return False
-    group_policy = _policy_from_config(config, "group_policy", "disabled")
-    if group_policy not in VALID_GROUP_POLICIES:
-        return False
-    processing_indicator = _policy_from_config(config, "processing_indicator", "typing")
-    if processing_indicator not in VALID_PROCESSING_INDICATORS:
-        return False
-    if dm_policy == "pairing" and group_policy in {"allowlist", "open"}:
-        return False
-    if mode == "relay":
-        return bool(_cfg_value(config, "relay_url"))
-    return _webhook_port_from_config(config) is not None
+    return True
 
 
 def _is_seatalk_connected(config: Any) -> bool:
@@ -191,85 +353,192 @@ class SeaTalkAdapter(BasePlatformAdapter):
             self._running = False
         self.config = config
         self.extra = _extra(config)
-        _sync_auth_env_from_extra(self.extra)
-        self.app_id = _cfg_value(config, "app_id")
-        self.app_secret = _env_value("SEATALK_APP_SECRET")
-        self.signing_secret = _env_value("SEATALK_SIGNING_SECRET")
-        self.mode = _mode_from_config(config)
-        self.relay_url = _cfg_value(config, "relay_url")
         self.home_channel = _cfg_value(config, "home_channel")
         self.home_channel_thread_id = _cfg_value(config, "home_channel_thread_id")
-        self.processing_indicator = _policy_from_config(config, "processing_indicator", "typing")
+        self.home_channel_account_id = _cfg_value(config, "home_channel_account_id")
         self.outbound_coalescing = _cfg_bool(
             config,
             "outbound_coalescing",
             True,
         )
-        self.client = self.extra.get("client") or SeaTalkOpenAPIClient(
-            self.app_id,
-            self.app_secret,
-            log_secrets=[self.signing_secret],
-        )
         self.inbound_events: list[tuple[dict[str, Any], str]] = []
         self._seatalk_event_handler = self.extra.get("event_handler")
-        allow_hosts = _cfg_csv(config, "media_allow_hosts", lower=True)
-        self._dispatcher = self.extra.get("dispatcher") or SeaTalkEventDispatcher(
-            adapter=self,
-            client=self.client,
-            app_id=self.app_id,
-            emit=self.extra.get("message_event_handler"),
-            media_allow_hosts=allow_hosts or None,
-            dm_policy=_policy_from_config(config, "dm_policy", "allowlist"),
-            allowlist=_cfg_csv(config, "allow_from", lower=True),
-            group_policy=_policy_from_config(config, "group_policy", "disabled"),
-            group_allowlist=_cfg_csv(config, "group_allow_from"),
-            group_sender_allowlist=_cfg_csv(config, "group_sender_allow_from", lower=True),
-            debounce_idle_seconds=_cfg_float(
-                config,
-                "inbound_debounce_idle_seconds",
-                1.5,
-            ),
-            debounce_max_seconds=_cfg_float(
-                config,
-                "inbound_debounce_max_seconds",
-                5.0,
-            ),
-        )
+        self.accounts = _accounts_from_extra(self.extra)
+        all_secrets = _build_all_secrets(self.accounts)
+        self._runtimes = {
+            account_id: self._build_runtime(account_config, all_secrets)
+            for account_id, account_config in self.accounts.items()
+        }
+        self._default_account_id = self._select_default_account_id()
+        default_runtime = self._runtimes[self._default_account_id]
+        default_config = default_runtime.config
+        self.app_id = default_config.app_id
+        self.app_secret = default_config.app_secret
+        self.signing_secret = default_config.signing_secret
+        self.mode = default_config.mode
+        self.relay_url = default_config.relay_url
+        self.processing_indicator = default_config.processing_indicator
+        self.client = default_runtime.client
+        self._dispatcher = default_runtime.dispatcher
+        self._coalescers = default_runtime.coalescers
         self._webhook_server: SeaTalkWebhookServer | None = None
         self._relay_client: SeaTalkRelayClient | None = None
-        self._coalescers = OutboundCoalescerMap(
-            send_factory=lambda chat_id, thread_id: (
-                lambda text: self._send_text_or_raise(chat_id, text, thread_id)
+
+    def _select_default_account_id(self) -> str:
+        if self.home_channel_account_id and self.home_channel_account_id in self._runtimes:
+            return self.home_channel_account_id
+        if "default" in self._runtimes:
+            return "default"
+        return sorted(self._runtimes)[0]
+
+    def _build_runtime(
+        self,
+        account_config: SeaTalkAccountConfig,
+        all_secrets: list[str],
+    ) -> SeaTalkAccountRuntime:
+        clients = self.extra.get("clients") if isinstance(self.extra.get("clients"), dict) else {}
+        client = clients.get(account_config.account_id) if isinstance(clients, dict) else None
+        if client is None and self.extra.get("client") is not None and len(self.accounts) == 1:
+            client = self.extra["client"]
+        if client is None:
+            client = SeaTalkOpenAPIClient(
+                account_config.app_id,
+                account_config.app_secret,
+                log_secrets=all_secrets,
+            )
+
+        dispatchers = self.extra.get("dispatchers") if isinstance(self.extra.get("dispatchers"), dict) else {}
+        dispatcher = dispatchers.get(account_config.account_id) if isinstance(dispatchers, dict) else None
+        if dispatcher is None and self.extra.get("dispatcher") is not None and len(self.accounts) == 1:
+            dispatcher = self.extra["dispatcher"]
+        if dispatcher is None:
+            dispatcher = SeaTalkEventDispatcher(
+                adapter=self,
+                client=client,
+                app_id=account_config.app_id,
+                account_id=account_config.account_id,
+                emit=self.extra.get("message_event_handler"),
+                media_allow_hosts=set(account_config.media_allow_hosts) or None,
+                dm_policy=account_config.dm_policy,
+                allowlist={item.lower() for item in account_config.allow_from},
+                group_policy=account_config.group_policy,
+                group_allowlist=set(account_config.group_allow_from),
+                group_sender_allowlist={item.lower() for item in account_config.group_sender_allow_from},
+                debounce_idle_seconds=_cfg_float(
+                    self.config,
+                    "inbound_debounce_idle_seconds",
+                    1.5,
+                ),
+                debounce_max_seconds=_cfg_float(
+                    self.config,
+                    "inbound_debounce_max_seconds",
+                    5.0,
+                ),
+            )
+
+        coalescers = OutboundCoalescerMap(
+            send_factory=lambda chat_id, thread_id, runtime_client=client: (
+                lambda text: self._send_text_or_raise_for_client(
+                    runtime_client,
+                    chat_id,
+                    text,
+                    thread_id,
+                )
             ),
             chunk_text=self._split_text,
             max_length=MAX_MESSAGE_LENGTH,
             idle_flush_seconds=_cfg_float(
-                config,
+                self.config,
                 "outbound_coalescing_idle_seconds",
                 OUTBOUND_COALESCING_IDLE_SECONDS,
             ),
         )
+        return SeaTalkAccountRuntime(
+            config=account_config,
+            client=client,
+            dispatcher=dispatcher,
+            coalescers=coalescers,
+        )
 
     async def connect(self) -> bool:
         try:
-            if self.mode == "webhook":
-                self._webhook_server = SeaTalkWebhookServer(
-                    host=_cfg_value(self.config, "webhook_host") or "0.0.0.0",
-                    port=_webhook_port_from_config(self.config) or 8080,
-                    path=_cfg_value(self.config, "webhook_path") or "/callback",
-                    signing_secret=self.signing_secret,
-                    dispatch=self._dispatch_event,
+            results: list[bool] = []
+            webhook_groups: dict[tuple[str, int, str], list[SeaTalkAccountRuntime]] = {}
+            for runtime in self._runtimes.values():
+                if runtime.config.mode == "webhook":
+                    account = runtime.config
+                    webhook_groups.setdefault(
+                        (account.webhook_host, account.webhook_port, account.webhook_path),
+                        [],
+                    ).append(runtime)
+                else:
+                    results.append(await self._connect_runtime(runtime))
+            for group in webhook_groups.values():
+                results.append(await self._connect_webhook_group(group))
+            self._refresh_platform_state()
+            return any(results)
+        except Exception as exc:  # noqa: BLE001
+            self._mark_fatal("seatalk_connect_failed", str(exc), retryable=True)
+            return False
+
+    async def _connect_webhook_group(self, runtimes: list[SeaTalkAccountRuntime]) -> bool:
+        first = runtimes[0].config
+        try:
+            server = SeaTalkWebhookServer(
+                host=first.webhook_host,
+                port=first.webhook_port,
+                path=first.webhook_path,
+                accounts=[
+                    SeaTalkWebhookAccount(
+                        account_id=runtime.config.account_id,
+                        app_id=runtime.config.app_id,
+                        signing_secret=runtime.config.signing_secret,
+                        dispatch=lambda event, source, account_id=runtime.config.account_id: (
+                            self._dispatch_runtime_event(account_id, event, source)
+                        ),
+                    )
+                    for runtime in runtimes
+                ],
+            )
+            await server.start()
+            for runtime in runtimes:
+                runtime.webhook_server = server
+                self._set_runtime_state(runtime, "running")
+                if runtime.config.account_id == self._default_account_id:
+                    self._webhook_server = server
+            return True
+        except Exception as exc:  # noqa: BLE001
+            for runtime in runtimes:
+                self._set_runtime_state(runtime, "auth_failed", str(exc))
+            return False
+
+    async def _connect_runtime(self, runtime: SeaTalkAccountRuntime) -> bool:
+        account = runtime.config
+        try:
+            if account.mode == "webhook":
+                runtime.webhook_server = SeaTalkWebhookServer(
+                    host=account.webhook_host,
+                    port=account.webhook_port,
+                    path=account.webhook_path,
+                    signing_secret=account.signing_secret,
+                    dispatch=lambda event, source, account_id=account.account_id: (
+                        self._dispatch_runtime_event(account_id, event, source)
+                    ),
                 )
-                await self._webhook_server.start()
-                self._mark_running()
+                await runtime.webhook_server.start()
+                self._set_runtime_state(runtime, "running")
+                if account.account_id == self._default_account_id:
+                    self._webhook_server = runtime.webhook_server
                 return True
 
-            self._relay_client = SeaTalkRelayClient(
-                relay_url=self.relay_url,
-                app_id=self.app_id,
-                app_secret=self.app_secret,
-                signing_secret=self.signing_secret,
-                dispatch=self._dispatch_event,
+            runtime.relay_client = SeaTalkRelayClient(
+                relay_url=account.relay_url,
+                app_id=account.app_id,
+                app_secret=account.app_secret,
+                signing_secret=account.signing_secret,
+                dispatch=lambda event, source, account_id=account.account_id: (
+                    self._dispatch_runtime_event(account_id, event, source)
+                ),
                 reconnect_initial_seconds=_cfg_float(
                     self.config,
                     "relay_reconnect_initial_seconds",
@@ -286,32 +555,86 @@ class SeaTalkAdapter(BasePlatformAdapter):
                     60.0,
                 ),
             )
-            connected = await self._relay_client.start()
+            connected = await runtime.relay_client.start(
+                timeout=_cfg_float(self.config, "relay_connect_timeout_seconds", 5.0)
+            )
             if connected:
-                self._mark_running()
-            elif self._relay_client.auth_failed:
-                self._mark_fatal("relay_auth_failed", self._relay_client.last_error or "relay auth failed")
-            return connected
+                self._set_runtime_state(runtime, "running")
+            elif runtime.relay_client.auth_failed:
+                self._set_runtime_state(
+                    runtime,
+                    "auth_failed",
+                    runtime.relay_client.last_error or "relay auth failed",
+                )
+            else:
+                self._set_runtime_state(
+                    runtime,
+                    "retrying",
+                    runtime.relay_client.last_error or "relay connection pending",
+                )
+            if account.account_id == self._default_account_id:
+                self._relay_client = runtime.relay_client
+            runtime.relay_monitor_task = asyncio.create_task(self._monitor_relay_runtime(runtime))
+            return runtime.state in {"running", "retrying"}
         except Exception as exc:  # noqa: BLE001
-            self._mark_fatal("seatalk_connect_failed", str(exc), retryable=True)
+            self._set_runtime_state(runtime, "auth_failed", str(exc))
             return False
 
+    async def _monitor_relay_runtime(self, runtime: SeaTalkAccountRuntime) -> None:
+        try:
+            while runtime.relay_client is not None:
+                client = runtime.relay_client
+                if client.auth_failed:
+                    self._set_runtime_state(runtime, "auth_failed", client.last_error or "relay auth failed")
+                    self._refresh_platform_state()
+                    return
+                if client.connected.is_set():
+                    if runtime.state != "running":
+                        self._set_runtime_state(runtime, "running")
+                        self._refresh_platform_state()
+                elif runtime.state == "running" or client.last_error:
+                    self._set_runtime_state(runtime, "retrying", client.last_error or "relay reconnecting")
+                    self._refresh_platform_state()
+                task = getattr(client, "_task", None)
+                if task is not None and task.done():
+                    if client.auth_failed:
+                        self._set_runtime_state(runtime, "auth_failed", client.last_error or "relay auth failed")
+                    elif runtime.state == "running":
+                        self._set_runtime_state(runtime, "retrying", client.last_error or "relay reconnecting")
+                    self._refresh_platform_state()
+                    return
+                await asyncio.sleep(_cfg_float(self.config, "relay_state_poll_seconds", 0.1))
+        except asyncio.CancelledError:
+            return
+
     async def disconnect(self) -> None:
-        flush_inbound = getattr(self._dispatcher, "flush_all", None)
-        if flush_inbound:
-            await flush_inbound()
-        await self.flush_outbound()
-        if self._relay_client is not None:
-            await self._relay_client.stop()
-            self._relay_client = None
-        if self._webhook_server is not None:
-            await self._webhook_server.stop()
-            self._webhook_server = None
-        close = getattr(self.client, "close", None)
-        if close:
-            result = close()
-            if asyncio.iscoroutine(result):
-                await result
+        stopped_webhook_servers: set[int] = set()
+        for runtime in self._runtimes.values():
+            flush_inbound = getattr(runtime.dispatcher, "flush_all", None)
+            if flush_inbound:
+                await flush_inbound()
+            await runtime.coalescers.flush_all()
+            if runtime.relay_monitor_task is not None:
+                runtime.relay_monitor_task.cancel()
+                await asyncio.gather(runtime.relay_monitor_task, return_exceptions=True)
+                runtime.relay_monitor_task = None
+            if runtime.relay_client is not None:
+                await runtime.relay_client.stop()
+                runtime.relay_client = None
+            if runtime.webhook_server is not None:
+                server_id = id(runtime.webhook_server)
+                if server_id not in stopped_webhook_servers:
+                    await runtime.webhook_server.stop()
+                    stopped_webhook_servers.add(server_id)
+                runtime.webhook_server = None
+            close = getattr(runtime.client, "close", None)
+            if close:
+                result = close()
+                if asyncio.iscoroutine(result):
+                    await result
+            self._set_runtime_state(runtime, "stopped")
+        self._relay_client = None
+        self._webhook_server = None
         self._mark_stopped()
 
     async def send(
@@ -324,22 +647,24 @@ class SeaTalkAdapter(BasePlatformAdapter):
         del reply_to
         try:
             target = await self._resolve_target(chat_id, metadata)
+            runtime = self._runtime_for_target(target)
             if self.outbound_coalescing and not (metadata or {}).get("_skip_coalescing"):
-                self._coalescers.append(target.chat_id, target.thread_id, content)
+                runtime.coalescers.append(target.chat_id, target.thread_id, content)
                 return SendResult(success=True, raw_response={"queued": True})
-            return await self._send_text_now(target.chat_id, content, target.thread_id)
+            return await self._send_text_now_for_client(runtime.client, target.chat_id, content, target.thread_id)
         except Exception as exc:  # noqa: BLE001
             return SendResult(success=False, error=str(exc), retryable=isinstance(exc, SeaTalkError))
 
     async def send_typing(self, chat_id: str, metadata: dict[str, Any] | None = None) -> SendResult:
         try:
-            if self.processing_indicator == "off":
-                return SendResult(success=True)
             target = await self._resolve_target(chat_id, metadata)
+            runtime = self._runtime_for_target(target)
+            if runtime.config.processing_indicator == "off":
+                return SendResult(success=True)
             if target.is_group:
-                await self.client.send_group_chat_typing(target.chat_id[len("group/") :], target.thread_id)
+                await runtime.client.send_group_chat_typing(target.chat_id[len("group/") :], target.thread_id)
             else:
-                await self.client.send_single_chat_typing(target.chat_id, target.thread_id)
+                await runtime.client.send_single_chat_typing(target.chat_id, target.thread_id)
             return SendResult(success=True)
         except Exception as exc:  # noqa: BLE001
             return SendResult(success=False, error=str(exc))
@@ -354,14 +679,16 @@ class SeaTalkAdapter(BasePlatformAdapter):
     ) -> SendResult:
         del reply_to
         try:
-            data, _content_type = await self.client.download_media(image_url)
+            target = await self._resolve_target(chat_id, metadata)
+            runtime = self._runtime_for_target(target)
+            data, _content_type = await runtime.client.download_media(image_url)
             filename = Path(urlsplit(image_url).path).name or "image"
             media = prepare_outbound_media_bytes(data, filename)
-            return await self._send_media_message(
-                chat_id,
+            return await self._send_media_message_to_target(
+                runtime,
+                target,
                 build_image_message(media.base64),
                 caption=caption,
-                metadata=metadata,
             )
         except Exception as exc:  # noqa: BLE001
             return SendResult(success=False, error=str(exc), retryable=isinstance(exc, SeaTalkError))
@@ -408,38 +735,55 @@ class SeaTalkAdapter(BasePlatformAdapter):
             return SendResult(success=False, error=str(exc), retryable=isinstance(exc, SeaTalkError))
 
     async def get_chat_info(self, chat_id: str) -> dict[str, Any]:
-        target = parse_seatalk_target(chat_id)
+        target = parse_seatalk_target(chat_id, known_accounts=set(self._runtimes))
+        account_id = target.account_id or self._default_account_id
+        runtime = self._runtime_for_account(account_id)
         if target.is_group:
             try:
-                data = await self.client.get_group_info(target.chat_id[len("group/") :])
+                data = await runtime.client.get_group_info(target.chat_id[len("group/") :])
                 return {
                     "name": data.get("group_name") or target.chat_id,
                     "type": "group",
-                    "chat_id": target.chat_id,
+                    "chat_id": _account_qualified_target(target.account_id, target.chat_id),
                 }
             except Exception:  # noqa: BLE001
                 pass
         return {
             "name": target.chat_id,
             "type": "group" if target.is_group else "dm",
-            "chat_id": target.chat_id,
+            "chat_id": _account_qualified_target(target.account_id, target.chat_id),
         }
 
     async def flush_outbound(self) -> None:
-        await self._coalescers.flush_all()
+        for runtime in self._runtimes.values():
+            await runtime.coalescers.flush_all()
 
     def set_seatalk_event_handler(self, handler: Any) -> None:
         self._seatalk_event_handler = handler
 
     async def _dispatch_event(self, event: dict[str, Any], source: str) -> None:
+        await self._dispatch_runtime_event(self._default_account_id, event, source)
+
+    async def _dispatch_runtime_event(self, account_id: str, event: dict[str, Any], source: str) -> None:
+        runtime = self._runtimes[account_id]
+        payload_app_id = str(event.get("app_id") or "")
+        if source == "relay" and payload_app_id and payload_app_id != runtime.config.app_id:
+            logger.warning(
+                "SeaTalk relay event dropped: account_id=%s reason=app_id_mismatch expected=%s got=%s",
+                account_id,
+                runtime.config.app_id,
+                payload_app_id,
+            )
+            return
         self.inbound_events.append((event, source))
         handler = self._seatalk_event_handler
         if handler:
             result = handler(event, source)
             if asyncio.iscoroutine(result):
                 await result
-        await self._dispatcher.dispatch(event, source)
-        self._mark_running()
+        await runtime.dispatcher.dispatch(event, source)
+        self._set_runtime_state(runtime, "running")
+        self._refresh_platform_state()
 
     async def _resolve_target(
         self,
@@ -449,15 +793,17 @@ class SeaTalkAdapter(BasePlatformAdapter):
         raw_target = (chat_id or "").strip()
         metadata = metadata or {}
         if not raw_target or raw_target == SEATALK_PLATFORM:
-            raw_target = self.home_channel
+            raw_target = self._configured_home_target()
             if not raw_target:
                 raise ValueError("SeaTalk home channel is not configured")
-        target = parse_seatalk_target(raw_target)
+        target = parse_seatalk_target(raw_target, known_accounts=set(self._runtimes))
+        account_id = self._select_target_account_id(target, metadata)
         thread_id = metadata.get("thread_id") or target.thread_id
-        if raw_target == self.home_channel and not thread_id:
+        if raw_target == self._configured_home_target() and not thread_id:
             thread_id = self.home_channel_thread_id or None
         if target.is_email:
-            resolved = await self.client.get_employee_code_by_email([target.chat_id])
+            runtime = self._runtime_for_account(account_id)
+            resolved = await runtime.client.get_employee_code_by_email([target.chat_id])
             employee_code = resolved.get(target.chat_id)
             if not employee_code:
                 raise ValueError(
@@ -470,6 +816,7 @@ class SeaTalkAdapter(BasePlatformAdapter):
                 thread_id=thread_id,
                 is_group=False,
                 is_email=False,
+                account_id=account_id,
             )
         elif thread_id != target.thread_id:
             target = SeaTalkTarget(
@@ -477,8 +824,46 @@ class SeaTalkAdapter(BasePlatformAdapter):
                 thread_id=thread_id,
                 is_group=target.is_group,
                 is_email=target.is_email,
+                account_id=account_id,
+            )
+        elif target.account_id != account_id:
+            target = SeaTalkTarget(
+                chat_id=target.chat_id,
+                thread_id=target.thread_id,
+                is_group=target.is_group,
+                is_email=target.is_email,
+                account_id=account_id,
             )
         return target
+
+    def _configured_home_target(self) -> str:
+        home = self.home_channel.strip()
+        if not home:
+            return ""
+        if self.home_channel_account_id and self.home_channel_account_id in self._runtimes:
+            try:
+                parsed = parse_seatalk_target(home, known_accounts=set(self._runtimes))
+            except ValueError:
+                return home
+            if parsed.account_id:
+                return home
+            return _account_qualified_target(self.home_channel_account_id, home)
+        return home
+
+    def _select_target_account_id(self, target: SeaTalkTarget, metadata: dict[str, Any]) -> str:
+        metadata_account_id = str(metadata.get("seatalk_account_id") or "").strip()
+        account_id = metadata_account_id or target.account_id or self._default_account_id
+        self._runtime_for_account(account_id)
+        return account_id
+
+    def _runtime_for_target(self, target: SeaTalkTarget) -> SeaTalkAccountRuntime:
+        return self._runtime_for_account(target.account_id or self._default_account_id)
+
+    def _runtime_for_account(self, account_id: str) -> SeaTalkAccountRuntime:
+        try:
+            return self._runtimes[account_id]
+        except KeyError as exc:
+            raise ValueError(f"Unknown SeaTalk account id: {account_id}") from exc
 
     async def _send_media_message(
         self,
@@ -489,19 +874,49 @@ class SeaTalkAdapter(BasePlatformAdapter):
         metadata: dict[str, Any] | None,
     ) -> SendResult:
         target = await self._resolve_target(chat_id, metadata)
+        runtime = self._runtime_for_target(target)
+        return await self._send_media_message_to_target(
+            runtime,
+            target,
+            message,
+            caption=caption,
+        )
+
+    async def _send_media_message_to_target(
+        self,
+        runtime: SeaTalkAccountRuntime,
+        target: SeaTalkTarget,
+        message: dict[str, Any],
+        *,
+        caption: str | None,
+    ) -> SendResult:
         if caption:
-            caption_result = await self._send_text_now(target.chat_id, caption, target.thread_id)
+            caption_result = await self._send_text_now_for_client(
+                runtime.client,
+                target.chat_id,
+                caption,
+                target.thread_id,
+            )
             if not caption_result.success:
                 return caption_result
-        response = await self._send_message_payload(target.chat_id, message, target.thread_id)
+        response = await self._send_message_payload_for_client(runtime.client, target.chat_id, message, target.thread_id)
         return SendResult(success=True, message_id=_message_id(response), raw_response=response)
 
     async def _send_text_now(self, chat_id: str, content: str, thread_id: str | None) -> SendResult:
+        return await self._send_text_now_for_client(self.client, chat_id, content, thread_id)
+
+    async def _send_text_now_for_client(
+        self,
+        client: Any,
+        chat_id: str,
+        content: str,
+        thread_id: str | None,
+    ) -> SendResult:
         if not content:
             return SendResult(success=True)
         last_response: dict[str, Any] | None = None
         for chunk in self._split_text(content, MAX_MESSAGE_LENGTH):
-            last_response = await self._send_message_payload(chat_id, build_text_message(chunk), thread_id)
+            last_response = await self._send_message_payload_for_client(client, chat_id, build_text_message(chunk), thread_id)
         return SendResult(
             success=True,
             message_id=_message_id(last_response),
@@ -513,15 +928,36 @@ class SeaTalkAdapter(BasePlatformAdapter):
         if not result.success:
             raise RuntimeError(result.error or "SeaTalk send failed")
 
+    async def _send_text_or_raise_for_client(
+        self,
+        client: Any,
+        chat_id: str,
+        content: str,
+        thread_id: str | None,
+    ) -> None:
+        if not content:
+            return
+        for chunk in self._split_text(content, MAX_MESSAGE_LENGTH):
+            await self._send_message_payload_for_client(client, chat_id, build_text_message(chunk), thread_id)
+
     async def _send_message_payload(
         self,
         chat_id: str,
         message: dict[str, Any],
         thread_id: str | None,
     ) -> dict[str, Any]:
+        return await self._send_message_payload_for_client(self.client, chat_id, message, thread_id)
+
+    async def _send_message_payload_for_client(
+        self,
+        client: Any,
+        chat_id: str,
+        message: dict[str, Any],
+        thread_id: str | None,
+    ) -> dict[str, Any]:
         if chat_id.startswith("group/"):
-            return await self.client.send_group_chat(chat_id[len("group/") :], message, thread_id)
-        return await self.client.send_single_chat(chat_id, message, thread_id)
+            return await client.send_group_chat(chat_id[len("group/") :], message, thread_id)
+        return await client.send_single_chat(chat_id, message, thread_id)
 
     def _split_text(self, content: str, max_length: int) -> list[str]:
         truncate = getattr(BasePlatformAdapter, "truncate_message", None)
@@ -552,6 +988,30 @@ class SeaTalkAdapter(BasePlatformAdapter):
             self._fatal_error_code = code
             self._fatal_error_message = message
 
+    def _set_runtime_state(
+        self,
+        runtime: SeaTalkAccountRuntime,
+        state: str,
+        error: str | None = None,
+    ) -> None:
+        runtime.state = state
+        runtime.auth_failed = state == "auth_failed"
+        runtime.last_error = error
+        logger.info(
+            "SeaTalk account runtime state changed: account_id=%s state=%s error=%s",
+            runtime.config.account_id,
+            state,
+            error or "",
+        )
+
+    def _refresh_platform_state(self) -> None:
+        runtimes = list(self._runtimes.values())
+        if any(runtime.state in {"running", "retrying"} for runtime in runtimes):
+            self._mark_running()
+            return
+        if runtimes and all(runtime.state == "auth_failed" for runtime in runtimes):
+            self._mark_fatal("seatalk_all_accounts_failed", "all SeaTalk accounts failed")
+
 
 def _raw_config_file() -> dict[str, Any]:
     try:
@@ -581,6 +1041,32 @@ def _config_file_extra() -> dict[str, Any]:
         return {}
     extra = seatalk.get("extra")
     return extra if isinstance(extra, dict) else {}
+
+
+def _known_account_ids_from_extra(extra: dict[str, Any]) -> set[str]:
+    accounts = extra.get("accounts")
+    if not isinstance(accounts, dict):
+        return set()
+    return {str(account_id) for account_id in accounts if str(account_id).strip()}
+
+
+def _account_qualified_home_target(extra: dict[str, Any]) -> str:
+    home = str(extra.get("home_channel") or "").strip()
+    if not home:
+        return ""
+    account_id = str(extra.get("home_channel_account_id") or "").strip()
+    if not account_id:
+        return home
+    known_accounts = _known_account_ids_from_extra(extra)
+    if known_accounts and account_id not in known_accounts:
+        return home
+    try:
+        parsed = parse_seatalk_target(home, known_accounts=known_accounts)
+    except ValueError:
+        return home
+    if parsed.account_id:
+        return home
+    return _account_qualified_target(account_id, home)
 
 
 def _ensure_seatalk_extra(config: dict[str, Any]) -> dict[str, Any]:
@@ -658,34 +1144,62 @@ def _sync_auth_env_from_extra(extra: dict[str, Any]) -> None:
 def _seatalk_setup_wizard() -> None:
     """Interactive setup entry point used by `hermes gateway setup`."""
     from hermes_cli.setup import (
-        get_env_value,
         print_header,
         print_info,
         print_success,
         prompt,
         prompt_choice,
         save_config,
-        save_env_value,
     )
 
     print_header("SeaTalk")
-    print_info("Configure the SeaTalk platform plugin. Restart the gateway after saving.")
+    print_info("Configure SeaTalk accounts. Values are saved to ~/.hermes/config.yaml.")
+    print_info("SeaTalk app_secret and signing_secret are stored in config.yaml; protect this file.")
 
     raw_config = _raw_config_file()
     extra = _ensure_seatalk_extra(raw_config)
+    accounts = extra.setdefault("accounts", {})
+    if not isinstance(accounts, dict):
+        accounts = {}
+        extra["accounts"] = accounts
 
-    app_id = prompt("SeaTalk app id", default=str(extra.get("app_id") or ""))
-    _set_optional(extra, "app_id", app_id)
+    account_ids = sorted(str(account_id) for account_id in accounts)
+    default_account_id = "default" if not account_ids else account_ids[0]
+    account_id = prompt("SeaTalk account id", default=default_account_id).strip() or default_account_id
+    if not ACCOUNT_ID_RE.fullmatch(account_id):
+        raise ValueError(f"Invalid SeaTalk account id: {account_id!r}")
 
-    for env_name, label in (
-        ("SEATALK_APP_SECRET", "SeaTalk app secret"),
-        ("SEATALK_SIGNING_SECRET", "SeaTalk signing secret"),
+    action = prompt_choice(
+        "SeaTalk account action",
+        ["add/edit", "disable", "remove"],
+        0,
+    )
+    if action == 2:
+        accounts.pop(account_id, None)
+        save_config(raw_config)
+        print_success(f"SeaTalk account '{account_id}' removed from ~/.hermes/config.yaml")
+        return
+
+    account = accounts.setdefault(account_id, {})
+    if not isinstance(account, dict):
+        account = {}
+        accounts[account_id] = account
+    if action == 1:
+        account["enabled"] = False
+        save_config(raw_config)
+        print_success(f"SeaTalk account '{account_id}' disabled in ~/.hermes/config.yaml")
+        return
+
+    account["enabled"] = True
+    for key, label in (
+        ("app_id", "SeaTalk app id"),
+        ("app_secret", "SeaTalk app secret"),
+        ("signing_secret", "SeaTalk signing secret"),
     ):
-        value = prompt(label, default=get_env_value(env_name) or "")
-        if value:
-            save_env_value(env_name, value)
+        value = prompt(label, default=str(account.get(key) or ""))
+        _set_optional(account, key, value)
 
-    existing_mode = str(extra.get("mode") or "webhook").lower()
+    existing_mode = str(account.get("mode") or "webhook").lower()
     default_index = 1 if existing_mode == "webhook" else 0
     mode_choice = prompt_choice(
         "SeaTalk connection mode",
@@ -693,50 +1207,52 @@ def _seatalk_setup_wizard() -> None:
         default_index,
     )
     mode = "webhook" if mode_choice == 1 else "relay"
-    extra["mode"] = mode
+    account["mode"] = mode
 
     if mode == "relay":
         relay_url = prompt(
             "SeaTalk relay WebSocket URL",
-            default=str(extra.get("relay_url") or ""),
+            default=str(account.get("relay_url") or ""),
         )
-        _set_optional(extra, "relay_url", relay_url)
+        _set_optional(account, "relay_url", relay_url)
         for stale_key in ("webhook_host", "webhook_port", "webhook_path"):
-            extra.pop(stale_key, None)
+            account.pop(stale_key, None)
     else:
-        extra.pop("relay_url", None)
+        account.pop("relay_url", None)
         for key, label, default in (
             ("webhook_host", "Webhook bind host", "0.0.0.0"),
             ("webhook_port", "Webhook port", "8080"),
             ("webhook_path", "Webhook path", "/callback"),
         ):
-            value = prompt(label, default=str(extra.get(key) or default))
-            _set_optional(extra, key, value)
+            value = prompt(label, default=str(account.get(key) or default))
+            _set_optional(account, key, value)
         print_info("Point the SeaTalk Bot App callback URL at this webhook endpoint.")
 
     for key, label in (
+        ("home_channel_account_id", "Default SeaTalk home channel account id (optional)"),
         ("home_channel", "Default SeaTalk home channel (optional)"),
         ("home_channel_thread_id", "Default thread id (optional)"),
     ):
-        value = prompt(label, default=str(extra.get(key) or ""))
+        default = account_id if key == "home_channel_account_id" else ""
+        value = prompt(label, default=str(extra.get(key) or default))
         _set_optional(extra, key, value)
 
-    dm_policy_existing = str(extra.get("dm_policy") or "allowlist").lower()
-    dm_policy_index = {"allowlist": 0, "open": 1, "pairing": 2}.get(dm_policy_existing, 0)
+    dm_policy_existing = str(account.get("dm_policy") or "allowlist").lower()
+    dm_policy_index = {"allowlist": 0, "open": 1}.get(dm_policy_existing, 0)
     dm_policy_choice = prompt_choice(
         "DM policy",
-        ["allowlist", "open", "pairing"],
+        ["allowlist", "open"],
         dm_policy_index,
     )
-    extra["dm_policy"] = ["allowlist", "open", "pairing"][dm_policy_choice]
+    account["dm_policy"] = ["allowlist", "open"][dm_policy_choice]
 
     allowed = prompt(
         "DM allowed users, comma-separated emails or employee codes",
-        default=_coerce_csv(extra.get("allow_from")),
+        default=_coerce_csv(account.get("allow_from")),
     )
-    _set_optional_csv(extra, "allow_from", allowed)
+    _set_optional_csv(account, "allow_from", allowed)
 
-    group_policy_existing = str(extra.get("group_policy") or "disabled").lower()
+    group_policy_existing = str(account.get("group_policy") or "disabled").lower()
     group_policy_index = {"disabled": 0, "allowlist": 1, "open": 2}.get(group_policy_existing, 0)
     group_policy_choice = prompt_choice(
         "Group policy",
@@ -744,40 +1260,36 @@ def _seatalk_setup_wizard() -> None:
         group_policy_index,
     )
     group_policy = ["disabled", "allowlist", "open"][group_policy_choice]
-    if extra["dm_policy"] == "pairing" and group_policy in {"allowlist", "open"}:
-        print_info("DM pairing cannot be combined with enabled group access; group policy remains disabled.")
-        group_policy = "disabled"
-    extra["group_policy"] = group_policy
+    account["group_policy"] = group_policy
     if group_policy == "allowlist":
         groups = prompt(
             "Allowed groups, comma-separated group ids",
-            default=_coerce_csv(extra.get("group_allow_from")),
+            default=_coerce_csv(account.get("group_allow_from")),
         )
-        _set_optional_csv(extra, "group_allow_from", groups)
+        _set_optional_csv(account, "group_allow_from", groups)
     else:
-        extra.pop("group_allow_from", None)
+        account.pop("group_allow_from", None)
 
     if group_policy in {"allowlist", "open"}:
         group_senders = prompt(
             "Group sender allowlist, comma-separated emails or employee codes (optional)",
-            default=_coerce_csv(extra.get("group_sender_allow_from")),
+            default=_coerce_csv(account.get("group_sender_allow_from")),
         )
-        _set_optional_csv(extra, "group_sender_allow_from", group_senders)
+        _set_optional_csv(account, "group_sender_allow_from", group_senders)
     else:
-        extra.pop("group_sender_allow_from", None)
+        account.pop("group_sender_allow_from", None)
 
-    processing_indicator_existing = str(extra.get("processing_indicator") or "typing").lower()
+    processing_indicator_existing = str(account.get("processing_indicator") or "typing").lower()
     processing_indicator_index = 1 if processing_indicator_existing == "off" else 0
     processing_indicator_choice = prompt_choice(
         "Processing indicator",
         ["typing", "off"],
         processing_indicator_index,
     )
-    extra["processing_indicator"] = "off" if processing_indicator_choice == 1 else "typing"
+    account["processing_indicator"] = "off" if processing_indicator_choice == 1 else "typing"
 
     save_config(raw_config)
-    _sync_auth_env_from_extra(extra)
-    print_success("SeaTalk configuration saved to ~/.hermes/config.yaml; secrets saved to ~/.hermes/.env")
+    print_success("SeaTalk account configuration saved to ~/.hermes/config.yaml")
     print_info("Restart the gateway for changes to take effect: hermes gateway restart")
 
 
@@ -801,7 +1313,7 @@ def _patch_cron_scheduler() -> None:
     if callable(original_chat_id) and not getattr(original_chat_id, "_seatalk_patched", False):
         def _patched_home_target_chat_id(platform_name: str) -> str:
             if platform_name.lower() == SEATALK_PLATFORM:
-                return str(_config_file_extra().get("home_channel") or "").strip()
+                return _account_qualified_home_target(_config_file_extra())
             return original_chat_id(platform_name)
 
         _patched_home_target_chat_id._seatalk_patched = True  # type: ignore[attr-defined]
@@ -834,10 +1346,13 @@ def _patch_send_message_tool() -> None:
     def _patched_parse(platform_name: str, target_ref: str):
         if platform_name == SEATALK_PLATFORM:
             try:
-                target = parse_seatalk_target(target_ref)
+                target = parse_seatalk_target(
+                    target_ref,
+                    known_accounts=_known_account_ids_from_extra(_config_file_extra()),
+                )
             except ValueError:
                 return None, None, False
-            return target.chat_id, target.thread_id, True
+            return _account_qualified_target(target.account_id, target.chat_id), target.thread_id, True
         return original(platform_name, target_ref)
 
     _patched_parse._seatalk_patched = True  # type: ignore[attr-defined]
@@ -950,7 +1465,7 @@ def _patch_home_channel() -> None:
             extra = getattr(platform_config, "extra", {}) or {}
         except Exception:
             extra = {}
-        home = str(extra.get("home_channel") or "").strip()
+        home = _account_qualified_home_target(extra)
         if not home:
             return None
         return HomeChannel(
@@ -971,7 +1486,7 @@ def _platform_value(platform: Any) -> str:
 
 def register(ctx: Any) -> None:
     """Plugin entry point called by the Hermes plugin loader."""
-    _sync_auth_env_from_extra(_config_file_extra())
+    os.environ[INTERNAL_ALLOW_ALL_ENV] = "true"
     _patch_cron_scheduler()
     _patch_send_message_tool()
     _patch_send_to_platform()
@@ -987,9 +1502,9 @@ def register(ctx: Any) -> None:
         validate_config=_validate_seatalk_config,
         is_connected=_is_seatalk_connected,
         required_env=REQUIRED_ENV,
-        install_hint="Install aiohttp>=3.9 and configure SeaTalk credentials.",
+        install_hint="Install aiohttp>=3.9 and configure SeaTalk accounts in config.yaml.",
         setup_fn=_seatalk_setup_wizard,
-        allowed_users_env=INTERNAL_ALLOWED_USERS_ENV,
+        allow_all_env=INTERNAL_ALLOW_ALL_ENV,
         max_message_length=4000,
         emoji="💬",
         platform_hint=_SEATALK_PLATFORM_HINT,

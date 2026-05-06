@@ -66,14 +66,12 @@ def test_t00_04_loader_style_package_import():
 def test_t00_05_env_example_is_complete_and_placeholder_only():
     text = (ROOT / "env.example").read_text()
 
-    for name in (
-        "SEATALK_APP_SECRET",
-        "SEATALK_SIGNING_SECRET",
-    ):
-        assert name in text
-
+    assert "does not require user-visible .env variables" in text
+    assert "accounts:" in text
+    assert "app_secret: your_app_secret" in text
+    assert "signing_secret: your_signing_secret" in text
     assert "your_app_secret" in text
     assert "your_signing_secret" in text
     assert "platforms:" in text
     assert "app_id: your_app_id" in text
-    assert "relay_url: wss://relay.example.com/ws" in text
+    assert "home_channel_account_id: default" in text

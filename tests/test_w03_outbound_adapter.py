@@ -46,11 +46,15 @@ class FailingClient(FakeSeaTalkClient):
 
 def _config(client, **extra):
     base = {
-        "app_id": "app-id",
-        "app_secret": "app-secret",
-        "signing_secret": "signing-secret",
-        "mode": "webhook",
-        "client": client,
+        "accounts": {
+            "default": {
+                "app_id": "app-id",
+                "app_secret": "app-secret",
+                "signing_secret": "signing-secret",
+                "mode": "webhook",
+            }
+        },
+        "clients": {"default": client},
     }
     base.update(extra)
     return SimpleNamespace(extra=base, enabled=True)
@@ -100,6 +104,8 @@ async def test_t03_03_specified_thread_send(monkeypatch):
 @pytest.mark.asyncio
 @pytest.mark.requires_hermes
 async def test_t03_04_long_text_is_split_in_order(monkeypatch):
+    if not adapter._HAS_HERMES_BASE:
+        pytest.skip("requires Hermes BasePlatformAdapter truncate behavior")
     client = FakeSeaTalkClient()
     seatalk = adapter.SeaTalkAdapter(_config(client, outbound_coalescing=False))
 
