@@ -10,7 +10,7 @@ import aiohttp
 import pytest
 
 from hermes_seatalk import adapter
-from hermes_seatalk.webhook import SeaTalkWebhookServer
+from hermes_seatalk.webhook import SeaTalkWebhookAccount, SeaTalkWebhookServer
 
 
 def _signature(body: bytes, secret: str = "signing-secret") -> str:
@@ -40,8 +40,12 @@ async def test_t04_01_valid_event_enters_dispatch():
         host="127.0.0.1",
         port=0,
         path="/callback",
-        signing_secret="signing-secret",
-        dispatch=dispatch,
+        accounts=[SeaTalkWebhookAccount(
+            account_id="default",
+            app_id="app-id",
+            signing_secret="signing-secret",
+            dispatch=dispatch,
+        )],
     )
     await server.start()
     try:
@@ -79,8 +83,12 @@ async def test_t04_02_invalid_signature_rejected():
         host="127.0.0.1",
         port=0,
         path="/callback",
-        signing_secret="signing-secret",
-        dispatch=dispatch,
+        accounts=[SeaTalkWebhookAccount(
+            account_id="default",
+            app_id="app-id",
+            signing_secret="signing-secret",
+            dispatch=dispatch,
+        )],
     )
     await server.start()
     try:
@@ -102,8 +110,12 @@ async def test_t04_03_event_verification_returns_challenge():
         host="127.0.0.1",
         port=0,
         path="/callback",
-        signing_secret="signing-secret",
-        dispatch=dispatch,
+        accounts=[SeaTalkWebhookAccount(
+            account_id="default",
+            app_id="app-id",
+            signing_secret="signing-secret",
+            dispatch=dispatch,
+        )],
     )
     await server.start()
     try:
@@ -128,8 +140,12 @@ async def test_t04_04_malformed_payload_rejected():
         host="127.0.0.1",
         port=0,
         path="/callback",
-        signing_secret="signing-secret",
-        dispatch=dispatch,
+        accounts=[SeaTalkWebhookAccount(
+            account_id="default",
+            app_id="app-id",
+            signing_secret="signing-secret",
+            dispatch=dispatch,
+        )],
     )
     await server.start()
     try:
@@ -154,8 +170,12 @@ async def test_t04_05_fast_ack_does_not_wait_for_dispatch():
         host="127.0.0.1",
         port=0,
         path="/callback",
-        signing_secret="signing-secret",
-        dispatch=dispatch,
+        accounts=[SeaTalkWebhookAccount(
+            account_id="default",
+            app_id="app-id",
+            signing_secret="signing-secret",
+            dispatch=dispatch,
+        )],
     )
     await server.start()
     try:
@@ -205,8 +225,12 @@ async def test_t04_07_event_verification_invalid_signature_rejected():
         host="127.0.0.1",
         port=0,
         path="/callback",
-        signing_secret="signing-secret",
-        dispatch=dispatch,
+        accounts=[SeaTalkWebhookAccount(
+            account_id="default",
+            app_id="app-id",
+            signing_secret="signing-secret",
+            dispatch=dispatch,
+        )],
     )
     await server.start()
     try:
@@ -220,3 +244,30 @@ async def test_t04_07_event_verification_invalid_signature_rejected():
                 assert "seatalk_challenge" not in await resp.text()
     finally:
         await server.stop()
+
+
+def test_t04_08_duplicate_signing_secret_raises():
+    async def dispatch(_event, _source):
+        pass
+
+    import pytest as _pytest
+    with _pytest.raises(ValueError, match="duplicate signing_secret"):
+        SeaTalkWebhookServer(
+            host="127.0.0.1",
+            port=0,
+            path="/callback",
+            accounts=[
+                SeaTalkWebhookAccount(
+                    account_id="a",
+                    app_id="app-id-a",
+                    signing_secret="shared-secret",
+                    dispatch=dispatch,
+                ),
+                SeaTalkWebhookAccount(
+                    account_id="b",
+                    app_id="app-id-b",
+                    signing_secret="shared-secret",
+                    dispatch=dispatch,
+                ),
+            ],
+        )

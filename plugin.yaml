@@ -6,6 +6,4 @@ description: >
   Supports DM and group/thread messages via webhook or relay gateway.
   Connects to SeaTalk Open Platform using a Bot App.
 author: AI Agent Team
-requires_env:
-  - SEATALK_APP_SECRET
-  - SEATALK_SIGNING_SECRET
+requires_env: []

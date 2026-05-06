@@ -22,7 +22,7 @@ DispatchFn = Callable[[dict[str, Any], str], Awaitable[None]]
 @dataclass(frozen=True)
 class SeaTalkWebhookAccount:
     account_id: str
-    app_id: str | None
+    app_id: str
     signing_secret: str
     dispatch: DispatchFn
 
@@ -41,29 +41,17 @@ class SeaTalkWebhookServer:
         host: str,
         port: int,
         path: str,
-        signing_secret: str | None = None,
-        dispatch: DispatchFn | None = None,
-        accounts: list[SeaTalkWebhookAccount] | None = None,
+        accounts: list[SeaTalkWebhookAccount],
     ):
+        if not accounts:
+            raise ValueError("SeaTalkWebhookServer requires at least one account")
+        secrets = [a.signing_secret for a in accounts]
+        if len(secrets) != len(set(secrets)):
+            raise ValueError("SeaTalkWebhookServer: duplicate signing_secret across accounts")
         self.host = host
         self.port = port
         self.path = path if path.startswith("/") else f"/{path}"
-        if accounts is None:
-            if signing_secret is None or dispatch is None:
-                raise ValueError("SeaTalkWebhookServer requires signing_secret/dispatch or accounts")
-            accounts = [
-                SeaTalkWebhookAccount(
-                    account_id="default",
-                    app_id=None,
-                    signing_secret=signing_secret,
-                    dispatch=dispatch,
-                )
-            ]
-        if not accounts:
-            raise ValueError("SeaTalkWebhookServer requires at least one account")
         self.accounts = accounts
-        self.signing_secret = accounts[0].signing_secret
-        self.dispatch = accounts[0].dispatch
         self.runner: web.AppRunner | None = None
         self.site: web.TCPSite | None = None
         self.tasks: set[asyncio.Task[None]] = set()
@@ -106,7 +94,7 @@ class SeaTalkWebhookServer:
             return web.Response(status=400, text="Malformed payload")
 
         app_id = str(payload.get("app_id") or payload.get("appId") or "").strip()
-        if app_id and account.app_id and app_id != account.app_id:
+        if app_id and app_id != account.app_id:
             return web.Response(status=403, text="Forbidden")
 
         if payload.get("event_type") == "event_verification":

@@ -16,6 +16,7 @@ RELEASE_PATHS=(
     __init__.py
     adapter.py
     hermes_seatalk
+    pyproject.toml
     requirements.txt
     env.example
     README.md

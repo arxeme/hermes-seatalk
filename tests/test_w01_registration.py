@@ -9,7 +9,6 @@ from hermes_seatalk import adapter
 SEATALK_ENV = [
     "SEATALK_APP_SECRET",
     "SEATALK_SIGNING_SECRET",
-    "HERMES_SEATALK_ALLOWED_USERS",
     "HERMES_SEATALK_ALLOW_ALL",
 ]
 

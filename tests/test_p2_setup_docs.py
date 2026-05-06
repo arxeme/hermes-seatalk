@@ -187,6 +187,7 @@ def test_t2_08_10_publish_branch_content():
     assert "RELEASE_BRANCH=\"publish\"" in script
     assert "README.md" in script
     assert "hermes_seatalk" in script
+    assert "pyproject.toml" in script
     assert "no docs/, tests/, scripts/, deploy/" in script
     release_paths = script[script.index("RELEASE_PATHS=(") : script.index("RELEASE_BRANCH=")]
     assert "docs" not in release_paths

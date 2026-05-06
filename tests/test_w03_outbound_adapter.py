@@ -45,15 +45,17 @@ class FailingClient(FakeSeaTalkClient):
 
 
 def _config(client, **extra):
+    account_coalescing = extra.pop("outbound_coalescing", None)
+    account = {
+        "app_id": "app-id",
+        "app_secret": "app-secret",
+        "signing_secret": "signing-secret",
+        "mode": "webhook",
+    }
+    if account_coalescing is not None:
+        account["outbound_coalescing"] = account_coalescing
     base = {
-        "accounts": {
-            "default": {
-                "app_id": "app-id",
-                "app_secret": "app-secret",
-                "signing_secret": "signing-secret",
-                "mode": "webhook",
-            }
-        },
+        "accounts": {"default": account},
         "clients": {"default": client},
     }
     base.update(extra)
@@ -221,6 +223,49 @@ async def test_t03_10_processing_indicator_off_skips_typing(monkeypatch):
 
     assert result.success is True
     assert client.calls == []
+
+
+@pytest.mark.asyncio
+async def test_t03_11_per_account_coalescing_isolation(monkeypatch):
+    default_client = FakeSeaTalkClient()
+    staging_client = FakeSeaTalkClient()
+    cfg = SimpleNamespace(extra={
+        "accounts": {
+            "default": {
+                "app_id": "app-id-1",
+                "app_secret": "secret-1",
+                "signing_secret": "signing-1",
+                "mode": "webhook",
+                "outbound_coalescing": True,
+            },
+            "staging": {
+                "app_id": "app-id-2",
+                "app_secret": "secret-2",
+                "signing_secret": "signing-2",
+                "mode": "webhook",
+                "outbound_coalescing": False,
+            },
+        },
+        "clients": {"default": default_client, "staging": staging_client},
+        "outbound_coalescing_idle_seconds": 60,
+    }, enabled=True)
+    seatalk = adapter.SeaTalkAdapter(cfg)
+
+    await seatalk.send("default:EmpABC", "queued")
+    await seatalk.send("staging:EmpXYZ", "immediate")
+
+    assert staging_client.calls == [("single", "EmpXYZ", {
+        "tag": "text",
+        "text": {"format": 1, "content": "immediate"},
+    }, None)]
+    assert default_client.calls == []
+
+    await seatalk.flush_outbound()
+
+    assert default_client.calls == [("single", "EmpABC", {
+        "tag": "text",
+        "text": {"format": 1, "content": "queued"},
+    }, None)]
 
 
 def test_t08_target_parser_full_formats():

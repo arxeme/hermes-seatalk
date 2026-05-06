@@ -525,8 +525,6 @@ class SeaTalkEventDispatcher:
     def _dm_sender_allowed(self, employee_code: str, email: str | None) -> bool:
         if self._dm_policy == "open":
             return True
-        if self._dm_policy == "pairing":
-            return True
         return _sender_in_allowlist(employee_code, email, self._allowlist)
 
 

@@ -18,12 +18,9 @@ def test_t00_01_manifest_can_be_parsed():
     assert "name: seatalk-platform" in text
     assert "kind: platform" in text
     assert "version:" in text
-    assert "requires_env:" in text
-    for name in (
-        "SEATALK_APP_SECRET",
-        "SEATALK_SIGNING_SECRET",
-    ):
-        assert f"  - {name}" in text
+    assert "requires_env: []" in text
+    assert "SEATALK_APP_SECRET" not in text
+    assert "SEATALK_SIGNING_SECRET" not in text
 
 
 def test_t00_02_import_has_no_registration_side_effect():
