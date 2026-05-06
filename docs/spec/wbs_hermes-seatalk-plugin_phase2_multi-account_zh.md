@@ -366,7 +366,7 @@ W2-09 depends on W2-00..W2-08
 ### W2-08 Setup wizard、文档与发布边界
 
 目标：用户可通过 setup wizard 和 README 配置 accounts-only SeaTalk plugin，并将
-home channel 交还 Hermes env 机制。
+home channel 写入 Hermes 标准 env 项。
 
 交付物：
 
@@ -378,8 +378,8 @@ home channel 交还 Hermes env 机制。
 完成条件：
 
 - wizard 支持 add/edit/disable/remove account。
-- wizard 不写 home channel 到 `config.yaml`。
-- wizard 不写 SeaTalk secrets 到 `.env`，只写 `config.yaml` accounts。
+- wizard 不写 home channel 到 `config.yaml`，而是写 `SEATALK_HOME_CHANNEL*` 到 `.env`。
+- wizard 不写 SeaTalk secrets 到 `.env`，secrets 只写 `config.yaml` accounts。
 - wizard 不展示 `pairing`。
 - README 明确 `config.yaml` 包含 secrets。
 - README 区分 `group_allow_from` raw group id 与 `SEATALK_HOME_CHANNEL` target 格式。

@@ -41,8 +41,9 @@ def test_t09_04_setup_wizard_order():
     assert source.index("SeaTalk connection mode") < source.index("relay_url")
     assert source.index("relay_url") < source.index("DM policy")
     assert source.index("DM policy") < source.index("Group policy")
-    assert "save_env_value" not in source
-    assert "get_env_value" not in source
+    assert source.index("Group policy") < source.index("SeaTalk home channel target")
+    assert "save_env_value" in source
+    assert "get_env_value" in source
     assert '"pairing"' not in source
     assert "SEATALK_ALLOW_ALL_USERS" not in source
     assert "GATEWAY_ALLOW_ALL_USERS" not in source

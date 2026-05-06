@@ -65,14 +65,16 @@ The SeaTalk wizard asks for values in this order:
 3. Inbound mode: `webhook` or `relay`.
 4. Mode-specific values.
 5. SeaTalk authorization policy.
+6. Home channel target, optional thread id, and display name.
 
 The wizard does not write SeaTalk or global allow-all settings. SeaTalk DMs
 remain deny-by-default unless an account `allow_from` is configured or
 `dm_policy` is explicitly opened. Group access is controlled separately by each
 account `group_policy` and defaults to `disabled`. The wizard does not offer
-`dm_policy=pairing`. Home channel uses Hermes' standard env mechanism; set it
-with `/sethome` from SeaTalk, or by writing `SEATALK_HOME_CHANNEL` in
-`~/.hermes/.env`.
+`dm_policy=pairing`. Home channel uses Hermes' standard env mechanism; the
+wizard writes `SEATALK_HOME_CHANNEL`, `SEATALK_HOME_CHANNEL_THREAD_ID`, and
+`SEATALK_HOME_CHANNEL_NAME` to `~/.hermes/.env`. You can also update it later
+with `/sethome` from SeaTalk.
 After saving, restart the relevant Hermes process so the new config is visible
 to the gateway and plugin loader.
 

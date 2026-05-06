@@ -724,7 +724,7 @@ event_has_seatalk_challenge=true
 | T2-08-02 wizard edit account | PASS | wizard 编辑 account 不破坏其他 accounts | `tests/test_p2_setup_docs.py` |
 | T2-08-03 wizard disable/remove | PASS | disable/remove account 后配置结构正确 | `tests/test_p2_setup_docs.py` |
 | T2-08-04 wizard 不写 home channel config | PASS | wizard 不写 `home_channel*` 到 `config.yaml` | `tests/test_p2_setup_docs.py` |
-| T2-08-05 wizard 不写 env | PASS | wizard 不写 SeaTalk secrets 到 `.env` | `tests/test_p2_setup_docs.py` |
+| T2-08-05 wizard 写 home channel env | PASS | wizard 写 `SEATALK_HOME_CHANNEL*` 到 `.env`，但不写 SeaTalk secrets 到 `.env` | `tests/test_p2_setup_docs.py` |
 | T2-08-06 wizard 无 pairing | PASS | wizard 不展示 `dm_policy=pairing` | `tests/test_p2_setup_docs.py` |
 | T2-08-07 README accounts 配置 | PASS | README 展示 `platforms.seatalk.extra.accounts` 示例 | `tests/test_p2_setup_docs.py` |
 | T2-08-08 README secrets 提醒 | PASS | README 明确 `config.yaml` 包含 `app_secret` / `signing_secret` | `tests/test_p2_setup_docs.py` |
@@ -737,8 +737,8 @@ event_has_seatalk_challenge=true
 | 完成条件 | 结果 | 证据 |
 | --- | --- | --- |
 | wizard 支持 add/edit/disable/remove account | MET | T2-08-01 到 T2-08-03 |
-| wizard 不写 home channel 到 `config.yaml` | MET | T2-08-04 |
-| wizard 不写 SeaTalk secrets 到 `.env`，只写 `config.yaml` accounts | MET | T2-08-05 |
+| wizard 不写 home channel 到 `config.yaml`，而是写 `SEATALK_HOME_CHANNEL*` 到 `.env` | MET | T2-08-04、T2-08-05 |
+| wizard 不写 SeaTalk secrets 到 `.env`，secrets 只写 `config.yaml` accounts | MET | T2-08-05 |
 | wizard 不展示 `pairing` | MET | T2-08-06 |
 | README 明确 `config.yaml` 包含 secrets | MET | T2-08-08 |
 | README 区分 `group_allow_from` raw group id 与 `SEATALK_HOME_CHANNEL` target 格式 | MET | T2-08-09 |

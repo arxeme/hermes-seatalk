@@ -215,7 +215,7 @@ tests/test_p2_setup_docs.py
 | T2-08-02 wizard edit account | unit | wizard 编辑 account 不破坏其他 accounts |
 | T2-08-03 wizard disable/remove | unit | disable/remove account 后配置结构正确 |
 | T2-08-04 wizard 不写 home channel config | unit | wizard 不写 `home_channel*` 到 `config.yaml` |
-| T2-08-05 wizard 不写 env | unit | wizard 不写 SeaTalk secrets 到 `.env` |
+| T2-08-05 wizard 写 home channel env | unit | wizard 写 `SEATALK_HOME_CHANNEL*` 到 `.env`，但不写 SeaTalk secrets 到 `.env` |
 | T2-08-06 wizard 无 pairing | unit | wizard 不展示 `dm_policy=pairing` |
 | T2-08-07 README accounts 配置 | unit | README 展示 `platforms.seatalk.extra.accounts` 示例 |
 | T2-08-08 README secrets 提醒 | unit | README 明确 `config.yaml` 包含 `app_secret` / `signing_secret` |
