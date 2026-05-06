@@ -7,3 +7,5 @@ description: >
   Connects to SeaTalk Open Platform using a Bot App.
 author: AI Agent Team
 requires_env: []
+provides_tools:
+  - seatalk

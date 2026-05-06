@@ -32,6 +32,7 @@ except Exception:  # pragma: no cover - lets the plugin import outside Hermes.
         raw_response: Any = None
         retryable: bool = False
 
+from .tools import register_seatalk_tool
 from .client import (
     SeaTalkError,
     SeaTalkOpenAPIClient,
@@ -352,9 +353,6 @@ class SeaTalkAdapter(BasePlatformAdapter):
             self._running = False
         self.config = config
         self.extra = _extra(config)
-        self.home_channel = _cfg_value(config, "home_channel")
-        self.home_channel_thread_id = _cfg_value(config, "home_channel_thread_id")
-        self.home_channel_account_id = _cfg_value(config, "home_channel_account_id")
         self.inbound_events: list[tuple[dict[str, Any], str]] = []
         self._seatalk_event_handler = self.extra.get("event_handler")
         self.accounts = _accounts_from_extra(self.extra)
@@ -753,7 +751,7 @@ class SeaTalkAdapter(BasePlatformAdapter):
         account_id = self._select_target_account_id(target, metadata)
         thread_id = metadata.get("thread_id") or target.thread_id
         if raw_target == self._configured_home_target() and not thread_id:
-            thread_id = self.home_channel_thread_id or None
+            thread_id = os.getenv("SEATALK_HOME_CHANNEL_THREAD_ID", "").strip() or None
         if target.is_email:
             runtime = self._runtime_for_account(account_id)
             if runtime.state not in {"running", "retrying"}:
@@ -795,18 +793,7 @@ class SeaTalkAdapter(BasePlatformAdapter):
         return target
 
     def _configured_home_target(self) -> str:
-        home = self.home_channel.strip()
-        if not home:
-            return ""
-        if self.home_channel_account_id and self.home_channel_account_id in self._runtimes:
-            try:
-                parsed = parse_seatalk_target(home, known_accounts=set(self._runtimes))
-            except ValueError:
-                return home
-            if parsed.account_id:
-                return home
-            return _account_qualified_target(self.home_channel_account_id, home)
-        return home
+        return os.getenv("SEATALK_HOME_CHANNEL", "").strip()
 
     def _select_target_account_id(self, target: SeaTalkTarget, metadata: dict[str, Any]) -> str:
         metadata_account_id = str(metadata.get("seatalk_account_id") or "").strip()
@@ -992,25 +979,6 @@ def _known_account_ids_from_extra(extra: dict[str, Any]) -> set[str]:
     return {str(account_id) for account_id in accounts if str(account_id).strip()}
 
 
-def _account_qualified_home_target(extra: dict[str, Any]) -> str:
-    home = str(extra.get("home_channel") or "").strip()
-    if not home:
-        return ""
-    account_id = str(extra.get("home_channel_account_id") or "").strip()
-    if not account_id:
-        return home
-    known_accounts = _known_account_ids_from_extra(extra)
-    if known_accounts and account_id not in known_accounts:
-        return home
-    try:
-        parsed = parse_seatalk_target(home, known_accounts=known_accounts)
-    except ValueError:
-        return home
-    if parsed.account_id:
-        return home
-    return _account_qualified_target(account_id, home)
-
-
 def _ensure_seatalk_extra(config: dict[str, Any]) -> dict[str, Any]:
     platforms = config.setdefault("platforms", {})
     if not isinstance(platforms, dict):
@@ -1151,15 +1119,6 @@ def _seatalk_setup_wizard() -> None:
             _set_optional(account, key, value)
         print_info("Point the SeaTalk Bot App callback URL at this webhook endpoint.")
 
-    for key, label in (
-        ("home_channel_account_id", "Default SeaTalk home channel account id (optional)"),
-        ("home_channel", "Default SeaTalk home channel (optional)"),
-        ("home_channel_thread_id", "Default thread id (optional)"),
-    ):
-        default = account_id if key == "home_channel_account_id" else ""
-        value = prompt(label, default=str(extra.get(key) or default))
-        _set_optional(extra, key, value)
-
     dm_policy_existing = str(account.get("dm_policy") or "allowlist").lower()
     dm_policy_index = {"allowlist": 0, "open": 1}.get(dm_policy_existing, 0)
     dm_policy_choice = prompt_choice(
@@ -1213,6 +1172,7 @@ def _seatalk_setup_wizard() -> None:
 
     save_config(raw_config)
     print_success("SeaTalk account configuration saved to ~/.hermes/config.yaml")
+    print_info("Set the SeaTalk home channel with /sethome or SEATALK_HOME_CHANNEL in ~/.hermes/.env.")
     print_info("Restart the gateway for changes to take effect: hermes gateway restart")
 
 
@@ -1232,27 +1192,9 @@ def _patch_cron_scheduler() -> None:
     if SEATALK_PLATFORM not in known:
         scheduler._KNOWN_DELIVERY_PLATFORMS = frozenset(set(known) | {SEATALK_PLATFORM})
 
-    original_chat_id = getattr(scheduler, "_get_home_target_chat_id", None)
-    if callable(original_chat_id) and not getattr(original_chat_id, "_seatalk_patched", False):
-        def _patched_home_target_chat_id(platform_name: str) -> str:
-            if platform_name.lower() == SEATALK_PLATFORM:
-                return _account_qualified_home_target(_config_file_extra())
-            return original_chat_id(platform_name)
-
-        _patched_home_target_chat_id._seatalk_patched = True  # type: ignore[attr-defined]
-        _patched_home_target_chat_id._seatalk_original = original_chat_id  # type: ignore[attr-defined]
-        scheduler._get_home_target_chat_id = _patched_home_target_chat_id
-
-    original_thread_id = getattr(scheduler, "_get_home_target_thread_id", None)
-    if callable(original_thread_id) and not getattr(original_thread_id, "_seatalk_patched", False):
-        def _patched_home_target_thread_id(platform_name: str) -> str | None:
-            if platform_name.lower() == SEATALK_PLATFORM:
-                return str(_config_file_extra().get("home_channel_thread_id") or "").strip() or None
-            return original_thread_id(platform_name)
-
-        _patched_home_target_thread_id._seatalk_patched = True  # type: ignore[attr-defined]
-        _patched_home_target_thread_id._seatalk_original = original_thread_id  # type: ignore[attr-defined]
-        scheduler._get_home_target_thread_id = _patched_home_target_thread_id
+    home_envs = getattr(scheduler, "_HOME_TARGET_ENV_VARS", None)
+    if isinstance(home_envs, dict):
+        home_envs[SEATALK_PLATFORM] = "SEATALK_HOME_CHANNEL"
 
 
 def _patch_send_message_tool() -> None:
@@ -1367,7 +1309,7 @@ async def _seatalk_send_to_platform(
 
 
 def _patch_home_channel() -> None:
-    """Read SeaTalk home channel values from ``platforms.seatalk.extra``."""
+    """Read SeaTalk home channel values from Hermes' standard env contract."""
     try:
         from gateway.config import GatewayConfig, HomeChannel
     except Exception:
@@ -1383,19 +1325,14 @@ def _patch_home_channel() -> None:
             return result
         if _platform_value(platform) != SEATALK_PLATFORM:
             return None
-        try:
-            platform_config = self.platforms.get(_platform_instance())
-            extra = getattr(platform_config, "extra", {}) or {}
-        except Exception:
-            extra = {}
-        home = _account_qualified_home_target(extra)
+        home = os.getenv("SEATALK_HOME_CHANNEL", "").strip()
         if not home:
             return None
         return HomeChannel(
             platform=platform,
             chat_id=home,
-            name=str(extra.get("home_channel_name") or "SeaTalk Home"),
-            thread_id=str(extra.get("home_channel_thread_id") or "").strip() or None,
+            name=os.getenv("SEATALK_HOME_CHANNEL_NAME", "SeaTalk Home"),
+            thread_id=os.getenv("SEATALK_HOME_CHANNEL_THREAD_ID", "").strip() or None,
         )
 
     _patched_get_home_channel._seatalk_patched = True  # type: ignore[attr-defined]
@@ -1432,4 +1369,5 @@ def register(ctx: Any) -> None:
         emoji="💬",
         platform_hint=_SEATALK_PLATFORM_HINT,
     )
+    register_seatalk_tool(ctx)
     setattr(ctx, "_seatalk_platform_registered", True)
