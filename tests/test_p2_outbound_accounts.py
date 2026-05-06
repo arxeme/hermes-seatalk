@@ -178,13 +178,12 @@ async def test_t2_07_09_send_typing_and_media_use_target_runtime(tmp_path: Path)
 
 
 @pytest.mark.asyncio
-async def test_t2_07_10_home_channel_account():
+async def test_t2_07_10_home_channel_env_account_target(monkeypatch):
+    monkeypatch.setenv("SEATALK_HOME_CHANNEL", "staging:group/Home")
     default = FakeSeaTalkClient("default")
     staging = FakeSeaTalkClient("staging")
     seatalk = adapter.SeaTalkAdapter(_config(
         {"default": default, "staging": staging},
-        home_channel_account_id="staging",
-        home_channel="group/Home",
     ))
 
     await seatalk.send("seatalk", "hello")
@@ -198,15 +197,7 @@ def test_t2_07_11_cron_account_target(monkeypatch):
 
     monkeypatch.setattr(scheduler, "_KNOWN_DELIVERY_PLATFORMS", frozenset({"telegram"}))
     monkeypatch.setattr(scheduler, "_HOME_TARGET_ENV_VARS", {"telegram": "TELEGRAM_HOME_CHANNEL"})
-    monkeypatch.setattr(
-        adapter,
-        "_config_file_extra",
-        lambda: {
-            "accounts": {"default": {}, "staging": {}},
-            "home_channel_account_id": "staging",
-            "home_channel": "group/Home",
-        },
-    )
+    monkeypatch.setenv("SEATALK_HOME_CHANNEL", "staging:group/Home")
 
     adapter._patch_cron_scheduler()
 

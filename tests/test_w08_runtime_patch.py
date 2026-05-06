@@ -67,11 +67,12 @@ def test_t08_03_home_channel(monkeypatch):
     platform = _register_platform_entry()
     original = getattr(GatewayConfig.get_home_channel, "_seatalk_original", GatewayConfig.get_home_channel)
     monkeypatch.setattr(GatewayConfig, "get_home_channel", original)
+    monkeypatch.setenv("SEATALK_HOME_CHANNEL", "group/Home")
 
     seatalk_adapter._patch_home_channel()
     cfg = GatewayConfig.__new__(GatewayConfig)
     cfg.platforms = {
-        platform: SimpleNamespace(home_channel=None, extra={"home_channel": "group/Home"})
+        platform: SimpleNamespace(home_channel=None, extra={})
     }
 
     home = cfg.get_home_channel(platform)
@@ -87,14 +88,13 @@ def test_t08_04_home_thread_id(monkeypatch):
     platform = _register_platform_entry()
     original = getattr(GatewayConfig.get_home_channel, "_seatalk_original", GatewayConfig.get_home_channel)
     monkeypatch.setattr(GatewayConfig, "get_home_channel", original)
+    monkeypatch.setenv("SEATALK_HOME_CHANNEL", "group/Home")
+    monkeypatch.setenv("SEATALK_HOME_CHANNEL_THREAD_ID", "ThreadHome")
 
     seatalk_adapter._patch_home_channel()
     cfg = GatewayConfig.__new__(GatewayConfig)
     cfg.platforms = {
-        platform: SimpleNamespace(home_channel=None, extra={
-            "home_channel": "group/Home",
-            "home_channel_thread_id": "ThreadHome",
-        })
+        platform: SimpleNamespace(home_channel=None, extra={})
     }
 
     home = cfg.get_home_channel(platform)
@@ -178,11 +178,7 @@ def test_t08_05_cron_target(monkeypatch):
 
     monkeypatch.setattr(scheduler, "_KNOWN_DELIVERY_PLATFORMS", frozenset({"telegram"}))
     monkeypatch.setattr(scheduler, "_HOME_TARGET_ENV_VARS", {"telegram": "TELEGRAM_HOME_CHANNEL"})
-    monkeypatch.setattr(
-        seatalk_adapter,
-        "_config_file_extra",
-        lambda: {"home_channel": "group/Home"},
-    )
+    monkeypatch.setenv("SEATALK_HOME_CHANNEL", "group/Home")
 
     seatalk_adapter._patch_cron_scheduler()
 

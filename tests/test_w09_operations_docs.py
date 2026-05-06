@@ -39,9 +39,7 @@ def test_t09_04_setup_wizard_order():
     assert source.index("SeaTalk app secret") < source.index("SeaTalk signing secret")
     assert source.index("SeaTalk signing secret") < source.index("SeaTalk connection mode")
     assert source.index("SeaTalk connection mode") < source.index("relay_url")
-    assert source.index("relay_url") < source.index('("home_channel_account_id"')
-    assert source.index('("home_channel_account_id"') < source.index('("home_channel"')
-    assert source.index('("home_channel"') < source.index("DM policy")
+    assert source.index("relay_url") < source.index("DM policy")
     assert source.index("DM policy") < source.index("Group policy")
     assert "save_env_value" not in source
     assert "get_env_value" not in source

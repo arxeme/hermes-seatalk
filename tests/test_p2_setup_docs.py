@@ -46,9 +46,6 @@ def test_t2_08_01_wizard_add_account(monkeypatch):
             "127.0.0.1",
             "8080",
             "/callback",
-            "default",
-            "group/Home",
-            "ThreadHome",
             "alice@example.com,bob@example.com",
             "alice@example.com",
         ],
@@ -89,9 +86,6 @@ def test_t2_08_02_wizard_edit_account_preserves_others(monkeypatch):
             "new-secret",
             "new-signing",
             "wss://relay.example.com/ws",
-            "staging",
-            "EmpHome",
-            "",
             "alice@example.com",
         ],
         choices=[0, 0, 1, 0, 0],
@@ -125,7 +119,7 @@ def test_t2_08_03_wizard_disable_and_remove(monkeypatch):
     assert "staging" not in extra["accounts"]
 
 
-def test_t2_08_04_wizard_home_channel(monkeypatch):
+def test_t2_08_04_wizard_does_not_write_home_channel_config(monkeypatch):
     extra = _run_wizard(
         monkeypatch,
         {},
@@ -137,17 +131,14 @@ def test_t2_08_04_wizard_home_channel(monkeypatch):
             "127.0.0.1",
             "8080",
             "/callback",
-            "default",
-            "group/Home",
-            "ThreadHome",
             "",
         ],
         choices=[0, 1, 1, 0, 0],
     )
 
-    assert extra["home_channel_account_id"] == "default"
-    assert extra["home_channel"] == "group/Home"
-    assert extra["home_channel_thread_id"] == "ThreadHome"
+    assert "home_channel_account_id" not in extra
+    assert "home_channel" not in extra
+    assert "home_channel_thread_id" not in extra
 
 
 def test_t2_08_05_wizard_does_not_write_env(monkeypatch):
@@ -178,7 +169,8 @@ def test_t2_08_07_to_09_readme_accounts_and_group_format():
     assert "config.yaml" in readme and "Protect this file" in readme
     assert "group_allow_from" in readme
     assert "raw SeaTalk `group_id`" in readme
-    assert "home_channel" in readme and "group/<group_id>" in readme
+    assert "SEATALK_HOME_CHANNEL" in readme
+    assert "staging:group/123" in readme
 
 
 def test_t2_08_10_publish_branch_content():

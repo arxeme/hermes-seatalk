@@ -10,6 +10,8 @@ SEATALK_ENV = [
     "SEATALK_APP_SECRET",
     "SEATALK_SIGNING_SECRET",
     "HERMES_SEATALK_ALLOW_ALL",
+    "SEATALK_HOME_CHANNEL",
+    "SEATALK_HOME_CHANNEL_THREAD_ID",
 ]
 
 
@@ -84,6 +86,7 @@ def test_t01_01_minimal_relay_config_registers_platform(monkeypatch):
     assert entry["max_message_length"] == 4000
     assert adapter.os.environ["HERMES_SEATALK_ALLOW_ALL"] == "true"
     assert "HERMES_SEATALK_ALLOWED_USERS" not in adapter.os.environ
+    assert "SEATALK_HOME_CHANNEL" not in adapter.os.environ
 
 
 def test_t01_02_missing_credentials_fail(monkeypatch):

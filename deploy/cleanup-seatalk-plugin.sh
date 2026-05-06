@@ -137,6 +137,7 @@ REMOTE_USER="${REMOTE_USER_OVERRIDE:-${REMOTE_USER:-${HERMES_RELEASE_USER:-}}}"
 REMOTE_HERMES_HOME="${REMOTE_HERMES_HOME_OVERRIDE:-${REMOTE_HERMES_HOME:-${HERMES_RELEASE_HOME:-/home/${REMOTE_USER}/.hermes}}}"
 REMOTE_HERMES_INSTALL_DIR="${REMOTE_HERMES_INSTALL_DIR_OVERRIDE:-${REMOTE_HERMES_INSTALL_DIR:-${HERMES_RELEASE_INSTALL_DIR:-/home/${REMOTE_USER}/hermes-agent}}}"
 REMOTE_PLUGIN_DIR="${REMOTE_PLUGIN_DIR_OVERRIDE:-${REMOTE_PLUGIN_DIR:-${REMOTE_HERMES_HOME}/plugins/seatalk}}"
+REMOTE_CANONICAL_PLUGIN_DIR="${REMOTE_HERMES_HOME}/plugins/${PLUGIN_ID}"
 
 shell_quote() {
     printf '%q' "$1"
@@ -182,7 +183,7 @@ service=hermes-gateway.service
 systemctl --user stop "\$service" 2>/dev/null || true
 systemctl --user reset-failed "\$service" 2>/dev/null || true
 
-if [ -d "${REMOTE_PLUGIN_DIR}" ]; then
+if [ -d "${REMOTE_PLUGIN_DIR}" ] || [ -d "${REMOTE_CANONICAL_PLUGIN_DIR}" ]; then
     hermes plugins disable "\$PLUGIN_ID" || true
 fi
 
@@ -207,7 +208,7 @@ plugins["disabled"] = sorted(set(disabled) | {os.environ["PLUGIN_ID"]})
 config_path.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
 PY
 
-rm -rf "${REMOTE_PLUGIN_DIR}"
+rm -rf "${REMOTE_PLUGIN_DIR}" "${REMOTE_CANONICAL_PLUGIN_DIR}"
 
 hermes gateway install --force
 systemctl --user daemon-reload
@@ -226,7 +227,8 @@ SeaTalk plugin removed.
   server:      ${SERVER_HOST}
   vm:          ${VM_NAME}
   user:        ${REMOTE_USER}
-  plugin dir:  ${REMOTE_PLUGIN_DIR}
+  plugin dirs: ${REMOTE_PLUGIN_DIR}
+               ${REMOTE_CANONICAL_PLUGIN_DIR}
   plugin id:   ${PLUGIN_ID}
   HERMES_HOME: ${REMOTE_HERMES_HOME}
 EOF

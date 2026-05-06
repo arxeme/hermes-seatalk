@@ -64,10 +64,10 @@ def _config(client, **extra):
 
 @pytest.mark.asyncio
 async def test_t03_01_home_channel_send(monkeypatch):
+    monkeypatch.setenv("SEATALK_HOME_CHANNEL", "EmpHome")
     client = FakeSeaTalkClient()
     seatalk = adapter.SeaTalkAdapter(_config(
         client,
-        home_channel="EmpHome",
         outbound_coalescing=False,
     ))
 

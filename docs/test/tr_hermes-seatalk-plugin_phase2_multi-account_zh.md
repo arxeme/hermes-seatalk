@@ -691,8 +691,8 @@ event_has_seatalk_challenge=true
 | T2-07-07 default fallback | PASS | 无 account prefix 时优先使用 `default` account | `tests/test_p2_outbound_accounts.py` |
 | T2-07-08 first enabled fallback | PASS | 无 default account 时使用按 account id 排序的第一个 enabled account | `tests/test_p2_outbound_accounts.py` |
 | T2-07-09 send 使用目标 runtime | PASS | send/send_typing/media send 调用解析出的 account runtime client | `tests/test_p2_outbound_accounts.py` |
-| T2-07-10 home channel account | PASS | `home_channel_account_id=staging` 返回并使用 `staging:<home_channel>` | `tests/test_p2_outbound_accounts.py` |
-| T2-07-11 cron account target | PASS | cron SeaTalk target 使用 account-qualified target | `tests/test_p2_outbound_accounts.py` |
+| T2-07-10 home channel env account target | PASS | `SEATALK_HOME_CHANNEL=staging:<target>` 使用 staging account | `tests/test_p2_outbound_accounts.py` |
+| T2-07-11 cron account target | PASS | cron SeaTalk target 使用 `SEATALK_HOME_CHANNEL` account-qualified target | `tests/test_p2_outbound_accounts.py` |
 | T2-07-12 内置平台回归 | PASS | Discord 原有 target parser 行为不变 | `tests/test_p2_outbound_accounts.py` |
 | T2-07-13 get_chat_info account target | PASS | `get_chat_info("staging:EmpABC")` 不误解析 thread；group info 使用 staging account client | `tests/test_p2_outbound_accounts.py` |
 | T2-07-14 SeaTalkTarget 默认 account_id | PASS | 旧式四参数构造仍可用，`account_id` 默认为 None | `tests/test_p2_outbound_accounts.py` |
@@ -710,8 +710,8 @@ event_has_seatalk_challenge=true
 | `metadata["seatalk_account_id"]` 优先级高于 target prefix | MET | T2-07-06 |
 | 无 account prefix 时按 `default` / 第一个 enabled account 选择 | MET | T2-07-07、T2-07-08 |
 | `get_chat_info("staging:EmpABC")` 不误解析 thread，group info 使用 staging runtime client | MET | T2-07-13 |
-| `home_channel_account_id` 生效 | MET | T2-07-10 |
-| cron delivery 使用 account-qualified target | MET | T2-07-11 |
+| `SEATALK_HOME_CHANNEL=staging:...` 生效 | MET | T2-07-10 |
+| cron delivery 使用 `SEATALK_HOME_CHANNEL` account-qualified target | MET | T2-07-11 |
 | 内置平台 target parser 行为不变 | MET | T2-07-12 |
 
 ### W2-08 Setup wizard、文档与发布边界
@@ -721,12 +721,12 @@ event_has_seatalk_challenge=true
 | T2-08-01 wizard add account | PASS | wizard 可创建 `accounts.<account_id>` 并写入 credentials/mode/policy | `tests/test_p2_setup_docs.py` |
 | T2-08-02 wizard edit account | PASS | wizard 编辑 account 不破坏其他 accounts | `tests/test_p2_setup_docs.py` |
 | T2-08-03 wizard disable/remove | PASS | disable/remove account 后配置结构正确 | `tests/test_p2_setup_docs.py` |
-| T2-08-04 wizard home channel | PASS | wizard 可设置 `home_channel_account_id` / `home_channel` / thread | `tests/test_p2_setup_docs.py` |
+| T2-08-04 wizard 不写 home channel config | PASS | wizard 不写 `home_channel*` 到 `config.yaml` | `tests/test_p2_setup_docs.py` |
 | T2-08-05 wizard 不写 env | PASS | wizard 不写 SeaTalk secrets 到 `.env` | `tests/test_p2_setup_docs.py` |
 | T2-08-06 wizard 无 pairing | PASS | wizard 不展示 `dm_policy=pairing` | `tests/test_p2_setup_docs.py` |
 | T2-08-07 README accounts 配置 | PASS | README 展示 `platforms.seatalk.extra.accounts` 示例 | `tests/test_p2_setup_docs.py` |
 | T2-08-08 README secrets 提醒 | PASS | README 明确 `config.yaml` 包含 `app_secret` / `signing_secret` | `tests/test_p2_setup_docs.py` |
-| T2-08-09 README group 格式 | PASS | README 区分 `group_allow_from` raw id 与 `home_channel` target | `tests/test_p2_setup_docs.py` |
+| T2-08-09 README group 格式 | PASS | README 区分 `group_allow_from` raw id 与 `SEATALK_HOME_CHANNEL` target | `tests/test_p2_setup_docs.py` |
 | T2-08-10 publish branch 内容 | PASS | `scripts/publish-release.sh` 输出 publish branch 只含 runtime 文件和 README | `tests/test_p2_setup_docs.py` |
 | T2-08-11 deploy 不覆盖 config | PASS | deploy 脚本文档/逻辑不默认覆盖远端 `~/.hermes/config.yaml` | `tests/test_p2_setup_docs.py` |
 
@@ -735,11 +735,11 @@ event_has_seatalk_challenge=true
 | 完成条件 | 结果 | 证据 |
 | --- | --- | --- |
 | wizard 支持 add/edit/disable/remove account | MET | T2-08-01 到 T2-08-03 |
-| wizard 支持设置 home channel account | MET | T2-08-04 |
-| wizard 不写 `.env`，只写 `config.yaml` accounts | MET | T2-08-05 |
+| wizard 不写 home channel 到 `config.yaml` | MET | T2-08-04 |
+| wizard 不写 SeaTalk secrets 到 `.env`，只写 `config.yaml` accounts | MET | T2-08-05 |
 | wizard 不展示 `pairing` | MET | T2-08-06 |
 | README 明确 `config.yaml` 包含 secrets | MET | T2-08-08 |
-| README 区分 `group_allow_from` raw group id 与 `home_channel` target 格式 | MET | T2-08-09 |
+| README 区分 `group_allow_from` raw group id 与 `SEATALK_HOME_CHANNEL` target 格式 | MET | T2-08-09 |
 | README 说明 `publish` 分支只包含 runtime 文件和 README | MET | T2-08-10 |
 | deploy 脚本不默认覆盖远端 `config.yaml` | MET | T2-08-11 |
 

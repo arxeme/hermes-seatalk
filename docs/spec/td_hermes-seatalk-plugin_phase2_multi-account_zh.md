@@ -338,9 +338,8 @@ employee code 或相同 group id 共用同一个 session。
 
 1. `metadata["seatalk_account_id"]`
 2. target 前缀：`<account_id>:<seatalk_target>`
-3. `home_channel_account_id`
-4. `default` account
-5. 第一个 enabled/configured account（按 account id 排序）
+3. `default` account
+4. 第一个 enabled/configured account（按 account id 排序）
 
 ### 6.2 Target 格式
 
@@ -370,23 +369,20 @@ employee code 或相同 group id 共用同一个 session。
 
 ### 6.3 Home Channel
 
-新增配置：
+Home channel 不写入 `platforms.seatalk.extra`，回归 Hermes 原生 env 机制：
 
-```yaml
-home_channel_account_id: default
-home_channel: group/<seatalk_group_id>
-home_channel_thread_id:
+```dotenv
+SEATALK_HOME_CHANNEL=staging:group/<seatalk_group_id>
+SEATALK_HOME_CHANNEL_THREAD_ID=
+SEATALK_HOME_CHANNEL_NAME=SeaTalk Home
 ```
 
-`home_channel` 是 Hermes 目标配置，所以 group 需要写
+`SEATALK_HOME_CHANNEL` 是 Hermes 目标配置，所以 group 需要写
 `group/<seatalk_group_id>`；这和 `group_allow_from` 的 raw `group_id` 配置不同。
-若不配置 `home_channel_account_id`，按第 6.1 的默认 account 选择。
-
-cron scheduler 和 `GatewayConfig.get_home_channel()` patch 需要返回 account-qualified
-target：若 `home_channel_account_id=staging` 且
-`home_channel=group/<seatalk_group_id>`，对 Hermes send path 暴露的 chat_id 应为
+多 account 场景下，用 account-qualified target，例如
 `staging:group/<seatalk_group_id>`。这样 cron、home channel 和普通
-`send_message` 走同一套 account 解析逻辑。
+`send_message` 仍然走同一套 account prefix 解析逻辑，但配置来源遵循 Hermes
+标准 `.env` 设计。
 
 ## 7. 授权与安全
 
@@ -532,7 +528,7 @@ Wizard 不写 `.env`，只通过 add/edit account 直接写入
 - `SeaTalkTarget` 增加 `account_id` 字段；所有 parser 调用点传入
   `known_accounts`。
 - `send()` / `send_typing()` / media send 使用目标 account runtime。
-- home channel 和 cron scheduler patch 支持 account id，并对 send path 返回
+- home channel 和 cron scheduler patch 读取 `SEATALK_HOME_CHANNEL*` env，并支持
   account-qualified target。
 
 ### Slice 6：setup wizard、docs、tests
@@ -600,7 +596,8 @@ Wizard 不写 `.env`，只通过 add/edit account 直接写入
 - `staging:EmpABC` 不会被误解析为 `chat_id=staging, thread_id=EmpABC`。
 - 无 account prefix 时使用 default account。
 - `metadata["seatalk_account_id"]` 优先级高于 target prefix。
-- home channel 和 cron delivery 能指定 account。
+- home channel 和 cron delivery 通过 `SEATALK_HOME_CHANNEL` account-qualified
+  target 指定 account。
 
 ## 11. 风险与待确认问题
 

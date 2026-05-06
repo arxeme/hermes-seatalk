@@ -46,7 +46,7 @@ account id、模式和脱敏后的目标类别，不记录 secret 明文。
 | `accounts.<account_id>.webhook_*` | webhook 模式记录外部 callback URL 与本地 host/port/path |
 | `accounts.<account_id>.allow_from` | 记录测试用户类别，不记录完整用户清单 |
 | `accounts.<account_id>.group_allow_from` | 记录测试群类别，不记录敏感群名；值为 raw group id |
-| `home_channel_account_id` / `home_channel` | 记录 account id、DM/group/thread 类别，必要时遮蔽 id |
+| `SEATALK_HOME_CHANNEL` / `SEATALK_HOME_CHANNEL_THREAD_ID` | 记录 account id、DM/group/thread 类别，必要时遮蔽 id |
 
 ## 4. 执行步骤
 
@@ -58,7 +58,7 @@ account id、模式和脱敏后的目标类别，不记录 secret 明文。
 4. 创建或编辑 `default` account，录入 app id、app secret、signing secret。
 5. 选择 `relay` 或 `webhook` 并录入该 account 对应模式的配置。
 6. 如需多帐号，重复 setup 或编辑 config，添加第二个 account。
-7. 配置 `home_channel_account_id` / `home_channel`。
+7. 通过 `/sethome` 或 `~/.hermes/.env` 配置 `SEATALK_HOME_CHANNEL`。
 8. 重启 gateway。
 9. 执行 `hermes gateway status`。
 
@@ -136,15 +136,15 @@ send_message(target="seatalk:staging:group/<id>:<thread_id>", message="hello sta
 
 ### E-05 Home Channel
 
-1. 配置 `home_channel_account_id`。
-2. 配置 `home_channel`，group target 使用 `group/<group_id>`。
-3. 如需 thread，配置 `home_channel_thread_id`。
+1. 配置 `SEATALK_HOME_CHANNEL`，group target 使用 `group/<group_id>`。
+2. 多帐号场景使用 account-qualified target，例如 `staging:group/<group_id>`。
+3. 如需 thread，配置 `SEATALK_HOME_CHANNEL_THREAD_ID`。
 3. 触发 cron 或 home channel 发送。
 
 预期结果：
 
 - 消息到达 home channel。
-- 多帐号配置下消息由 `home_channel_account_id` 对应 account 发送。
+- 多帐号配置下消息由 `SEATALK_HOME_CHANNEL` 前缀对应 account 发送。
 - thread id 行为符合配置。
 
 ### E-06 未授权用户

@@ -64,13 +64,15 @@ The SeaTalk wizard asks for values in this order:
 2. App identity and secrets: `app_id`, `app_secret`, and `signing_secret`.
 3. Inbound mode: `webhook` or `relay`.
 4. Mode-specific values.
-5. Optional home channel account/target and SeaTalk authorization policy.
+5. SeaTalk authorization policy.
 
 The wizard does not write SeaTalk or global allow-all settings. SeaTalk DMs
 remain deny-by-default unless an account `allow_from` is configured or
 `dm_policy` is explicitly opened. Group access is controlled separately by each
 account `group_policy` and defaults to `disabled`. The wizard does not offer
-`dm_policy=pairing`.
+`dm_policy=pairing`. Home channel uses Hermes' standard env mechanism; set it
+with `/sethome` from SeaTalk, or by writing `SEATALK_HOME_CHANNEL` in
+`~/.hermes/.env`.
 After saving, restart the relevant Hermes process so the new config is visible
 to the gateway and plugin loader.
 
@@ -108,10 +110,6 @@ platforms:
           media_allow_hosts:
             - openapi.seatalk.io
           outbound_coalescing: true
-      home_channel: group/123
-      home_channel_account_id: default
-      home_channel_name: SeaTalk Home
-      home_channel_thread_id:
 ```
 
 Webhook mode runs a local HTTP callback endpoint and replaces `relay_url` with
@@ -153,9 +151,18 @@ SeaTalk sender email is preferred as `user_id`; when email is unavailable,
 employee code is preserved as the fallback identity. SeaTalk policy is enforced
 by the plugin before messages are passed into Hermes.
 
-`home_channel` is a SeaTalk target string and may use `group/<group_id>` for
-groups. `group_allow_from` is different: it stores raw SeaTalk group ids only.
-When multiple accounts are configured, set `home_channel_account_id` or use an
+Home channel is not stored in `config.yaml`. It follows Hermes' standard env
+contract:
+
+```dotenv
+SEATALK_HOME_CHANNEL=default:group/123
+SEATALK_HOME_CHANNEL_THREAD_ID=
+SEATALK_HOME_CHANNEL_NAME=SeaTalk Home
+```
+
+`SEATALK_HOME_CHANNEL` is a SeaTalk target string and may use
+`group/<group_id>` for groups. `group_allow_from` is different: it stores raw
+SeaTalk group ids only. When multiple accounts are configured, use an
 account-qualified target such as `staging:group/123`.
 
 The repository publishes installable runtime content through the `publish`

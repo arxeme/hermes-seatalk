@@ -198,8 +198,8 @@ tests/test_p2_setup_docs.py
 | T2-07-07 default fallback | unit | 无 account prefix 时优先使用 `default` account |
 | T2-07-08 first enabled fallback | unit | 无 default account 时使用按 account id 排序的第一个 enabled account |
 | T2-07-09 send 使用目标 runtime | unit | send/send_typing/media send 调用解析出的 account runtime client |
-| T2-07-10 home channel account | unit | `home_channel_account_id=staging` 返回 `staging:<home_channel>` |
-| T2-07-11 cron account target | unit | cron SeaTalk target 使用 account-qualified target |
+| T2-07-10 home channel env account target | unit | `SEATALK_HOME_CHANNEL=staging:<target>` 使用 staging account |
+| T2-07-11 cron account target | unit | cron SeaTalk target 使用 `SEATALK_HOME_CHANNEL` account-qualified target |
 | T2-07-12 内置平台回归 | unit | Slack/Discord/Telegram 等原有 target parser 行为不变 |
 | T2-07-13 get_chat_info account target | unit | `get_chat_info("staging:EmpABC")` 使用 staging account client，不把 `EmpABC` 误解析为 thread id |
 | T2-07-14 SeaTalkTarget 默认 account_id | unit | `SeaTalkTarget(...)` 旧式四参数构造仍可用，`account_id` 默认为 None |
@@ -214,12 +214,12 @@ tests/test_p2_setup_docs.py
 | T2-08-01 wizard add account | unit | wizard 可创建 `accounts.<account_id>` 并写入 credentials/mode/policy |
 | T2-08-02 wizard edit account | unit | wizard 编辑 account 不破坏其他 accounts |
 | T2-08-03 wizard disable/remove | unit | disable/remove account 后配置结构正确 |
-| T2-08-04 wizard home channel | unit | wizard 可设置 `home_channel_account_id` / `home_channel` / thread |
+| T2-08-04 wizard 不写 home channel config | unit | wizard 不写 `home_channel*` 到 `config.yaml` |
 | T2-08-05 wizard 不写 env | unit | wizard 不写 SeaTalk secrets 到 `.env` |
 | T2-08-06 wizard 无 pairing | unit | wizard 不展示 `dm_policy=pairing` |
 | T2-08-07 README accounts 配置 | unit | README 展示 `platforms.seatalk.extra.accounts` 示例 |
 | T2-08-08 README secrets 提醒 | unit | README 明确 `config.yaml` 包含 `app_secret` / `signing_secret` |
-| T2-08-09 README group 格式 | unit | README 区分 `group_allow_from` raw id 与 `home_channel` target |
+| T2-08-09 README group 格式 | unit | README 区分 `group_allow_from` raw id 与 `SEATALK_HOME_CHANNEL` target |
 | T2-08-10 publish branch 内容 | integration | `scripts/publish-release.sh` 输出 publish branch 只含 runtime 文件和 README |
 | T2-08-11 deploy 不覆盖 config | unit | deploy 脚本文档/逻辑不默认覆盖远端 `~/.hermes/config.yaml` |
 
@@ -301,7 +301,7 @@ uv run pytest
 | E2-06 DM account session | 同一用户分别向两个 account DM | Hermes session 不串联，`user_id` 不带 account prefix |
 | E2-07 group sender policy | open group 中非 allowlist sender 触发 | agent 不执行，日志显示 sender_not_allowed |
 | E2-08 outbound account target | 调用 `send_message` 到 `staging:group/<id>` | staging SeaTalk app 发送消息 |
-| E2-09 home channel account | 配置 `home_channel_account_id=staging` 后触发 home send | 消息从 staging account 发出 |
+| E2-09 home channel account | 配置 `SEATALK_HOME_CHANNEL=staging:<target>` 后触发 home send | 消息从 staging account 发出 |
 
 真实联调需要 SeaTalk Bot App、relay/webhook 可达地址和测试用户/群，不纳入默认 CI。
 
