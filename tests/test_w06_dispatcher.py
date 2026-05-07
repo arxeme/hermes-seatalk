@@ -231,7 +231,7 @@ async def test_t06_07_forwarded_includes_media(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_t06_08_forwarded_sender_prefix(monkeypatch):
-    """Each forwarded item with a sender field gets a 'SenderName: ' prefix."""
+    """Each forwarded item with a sender uses [sender] bracket prefix."""
     fake_adapter = FakeAdapter()
     items = [
         {
@@ -250,8 +250,9 @@ async def test_t06_08_forwarded_sender_prefix(monkeypatch):
     await _dispatcher(fake_adapter).dispatch(payload, "webhook")
 
     event = fake_adapter.events[0]
-    assert "EmpAlice (alice@example.com): hello from alice" in event.text
-    assert "EmpBob: hi from bob" in event.text
+    # email takes precedence over code in bracket prefix
+    assert "[alice@example.com] hello from alice" in event.text
+    assert "[EmpBob] hi from bob" in event.text
 
 
 @pytest.mark.asyncio
@@ -373,3 +374,143 @@ async def test_t06_12_media_retry_succeeds_on_second_attempt(monkeypatch):
     assert event.media_urls != [], "media should be present after successful retry"
     assert event.raw_message["seatalk_media_errors"] == []
     assert attempt_count["n"] == 2
+
+
+# ── Fix 1: forwarded sender prefix with timestamp ────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_t06_13_forwarded_sender_prefix_with_timestamp(monkeypatch):
+    """message_sent_time is included in the forwarded item sender prefix."""
+    fake_adapter = FakeAdapter()
+    items = [
+        {
+            "tag": "text",
+            "text": {"plain_text": "msg with time"},
+            "sender": {"employee_code": "EmpAlice", "email": "alice@example.com"},
+            "message_sent_time": 1735689600,  # 2025-01-01T00:00:00Z
+        },
+        {
+            "tag": "text",
+            "text": {"plain_text": "msg code only with time"},
+            "sender": {"employee_code": "EmpBob"},
+            "message_sent_time": 1735689600,
+        },
+        {
+            "tag": "text",
+            "text": {"plain_text": "no sender at all"},
+        },
+    ]
+    payload = _forwarded_payload(items=items)
+    await _dispatcher(fake_adapter).dispatch(payload, "webhook")
+
+    event = fake_adapter.events[0]
+    assert "[alice@example.com 2025-01-01T00:00:00Z] msg with time" in event.text
+    assert "[EmpBob 2025-01-01T00:00:00Z] msg code only with time" in event.text
+    assert "no sender at all" in event.text
+
+
+def test_t06_14_format_forwarded_sender_prefix_unit():
+    """Unit-test _format_forwarded_sender_prefix helper directly."""
+    from hermes_seatalk.dispatcher import _format_forwarded_sender_prefix
+
+    assert _format_forwarded_sender_prefix({}) == ""
+    assert _format_forwarded_sender_prefix({"sender": {}}) == ""
+
+    r = _format_forwarded_sender_prefix({"sender": {"email": "a@b.com"}})
+    assert r == "[a@b.com] "
+
+    r = _format_forwarded_sender_prefix({"sender": {"employee_code": "EmpX"}})
+    assert r == "[EmpX] "
+
+    r = _format_forwarded_sender_prefix({
+        "sender": {"email": "a@b.com"},
+        "message_sent_time": 1735689600,
+    })
+    assert r == "[a@b.com 2025-01-01T00:00:00Z] "
+
+    # zero / negative sent_time is ignored
+    r = _format_forwarded_sender_prefix({
+        "sender": {"email": "a@b.com"},
+        "message_sent_time": 0,
+    })
+    assert r == "[a@b.com] "
+
+
+# ── Fix 2: buffer-based MIME detection ───────────────────────────────────────
+
+
+def test_t06_15_detect_mime_from_buffer_unit():
+    """Unit-test _detect_mime_from_buffer for common formats."""
+    from hermes_seatalk.dispatcher import _detect_mime_from_buffer
+
+    assert _detect_mime_from_buffer(b"\x89PNG\r\n\x1a\n" + b"\x00" * 8) == "image/png"
+    assert _detect_mime_from_buffer(b"\xff\xd8\xff\xe0" + b"\x00" * 8) == "image/jpeg"
+    assert _detect_mime_from_buffer(b"GIF89a" + b"\x00" * 8) == "image/gif"
+    assert _detect_mime_from_buffer(b"GIF87a" + b"\x00" * 8) == "image/gif"
+    assert _detect_mime_from_buffer(b"RIFF\x00\x00\x00\x00WEBP" + b"\x00" * 8) == "image/webp"
+    assert _detect_mime_from_buffer(b"%PDF-1.4" + b"\x00" * 8) == "application/pdf"
+    assert _detect_mime_from_buffer(b"PK\x03\x04" + b"\x00" * 8) == "application/zip"
+    assert _detect_mime_from_buffer(b"\x00\x00\x00\x18ftyp" + b"\x00" * 8) == "video/mp4"
+    assert _detect_mime_from_buffer(b"\x00\x00\x00\x00" + b"\x00" * 8) is None
+
+
+@pytest.mark.asyncio
+async def test_t06_16_mime_detection_applied_when_octet_stream(monkeypatch):
+    """When server returns application/octet-stream with no URL extension, buffer MIME is used."""
+    client = FakeClient()
+    png_bytes = b"\x89PNG\r\n\x1a\n" + b"\x00" * 16
+
+    async def _download(_url):
+        return png_bytes, "application/octet-stream"
+
+    client.download_media = _download
+    client.download_error = None
+
+    fake_adapter = FakeAdapter()
+    payload = _dm_payload(event_id="event-1", text="")
+    payload["event"]["message"] = {
+        "message_id": "msg-1",
+        "tag": "image",
+        # URL has no extension so Path(parsed.path).suffix == ""
+        "image": {"content": "https://openapi.seatalk.io/media/abc123"},
+    }
+
+    await _dispatcher(fake_adapter, client).dispatch(payload, "webhook")
+
+    event = fake_adapter.events[0]
+    assert event.media_urls != [], "media should be resolved via buffer MIME detection"
+    assert "image" in event.media_types
+
+
+# ── Fix 4: inbound media size limit ─────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_t06_17_inbound_media_size_limit_rejected(monkeypatch):
+    """Media larger than 250 MB is rejected and reported as an error."""
+    from hermes_seatalk.dispatcher import MAX_INBOUND_RAW_BYTES
+
+    client = FakeClient()
+    oversized = b"\xff\xd8\xff" + b"\x00" * (MAX_INBOUND_RAW_BYTES + 1)
+
+    async def _download(_url):
+        return oversized, "image/jpeg"
+
+    client.download_media = _download
+    client.download_error = None
+
+    fake_adapter = FakeAdapter()
+    payload = _dm_payload(event_id="event-1", text="")
+    payload["event"]["message"] = {
+        "message_id": "msg-1",
+        "tag": "image",
+        "image": {"content": "https://openapi.seatalk.io/media/huge"},
+    }
+
+    await _dispatcher(fake_adapter, client).dispatch(payload, "webhook")
+
+    event = fake_adapter.events[0]
+    assert event.media_urls == [], "oversized media must not be cached"
+    errors = event.raw_message["seatalk_media_errors"]
+    assert any("250MB" in e or "too large" in e.lower() for e in errors)

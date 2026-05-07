@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import os
 import re
@@ -1362,7 +1363,8 @@ def _patch_home_channel() -> None:
         home = os.getenv("SEATALK_HOME_CHANNEL", "").strip()
         if not home:
             return None
-        return HomeChannel(
+        return _make_home_channel(
+            HomeChannel,
             platform=platform,
             chat_id=home,
             name=os.getenv("SEATALK_HOME_CHANNEL_NAME", "SeaTalk Home"),
@@ -1372,6 +1374,16 @@ def _patch_home_channel() -> None:
     _patched_get_home_channel._seatalk_patched = True  # type: ignore[attr-defined]
     _patched_get_home_channel._seatalk_original = original  # type: ignore[attr-defined]
     GatewayConfig.get_home_channel = _patched_get_home_channel
+
+
+def _make_home_channel(home_channel_cls: Any, *, platform: Any, chat_id: str, name: str, thread_id: str | None) -> Any:
+    kwargs = {"platform": platform, "chat_id": chat_id, "name": name}
+    try:
+        if "thread_id" in inspect.signature(home_channel_cls).parameters:
+            kwargs["thread_id"] = thread_id
+    except (TypeError, ValueError):
+        pass
+    return home_channel_cls(**kwargs)
 
 
 def _platform_value(platform: Any) -> str:
