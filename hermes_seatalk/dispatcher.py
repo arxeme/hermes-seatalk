@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import datetime
 import logging
 import mimetypes
 import time
@@ -88,6 +89,7 @@ DEFAULT_DEDUP_MAX_SIZE = 1000
 DEFAULT_DEBOUNCE_IDLE_SECONDS = 1.5
 DEFAULT_DEBOUNCE_MAX_SECONDS = 5.0
 DEFAULT_MEDIA_ALLOW_HOSTS = {"openapi.seatalk.io"}
+MAX_INBOUND_RAW_BYTES = 250 * 1024 * 1024  # 250 MB, matches openclaw limit
 
 
 @dataclass
@@ -420,13 +422,7 @@ class SeaTalkEventDispatcher:
                 continue
             if not isinstance(item, dict):
                 continue
-            sender = item.get("sender")
-            sender_prefix = ""
-            if isinstance(sender, dict):
-                code = _str_or_none(sender.get("employee_code")) or "unknown"
-                email = _normalize_email(sender.get("email"))
-                sender_name = _user_name(code, email)
-                sender_prefix = f"{sender_name}: "
+            sender_prefix = _format_forwarded_sender_prefix(item)
             text, item_urls, item_types, item_errs = await self._resolve_message_content(item)
             if text:
                 lines.append(f"{sender_prefix}{text}")
@@ -477,7 +473,15 @@ class SeaTalkEventDispatcher:
                 logger.debug("SeaTalk media download attempt failed, retrying: %s", exc)
         else:
             raise last_exc  # type: ignore[misc]
+        if len(raw) > MAX_INBOUND_RAW_BYTES:
+            mb = len(raw) / 1024 / 1024
+            raise ValueError(f"SeaTalk inbound media too large: {mb:.1f}MB exceeds 250MB limit")
         ext = Path(parsed.path).suffix or _extension_from_content_type(content_type)
+        if not ext and content_type in {"application/octet-stream", ""}:
+            detected_ct = _detect_mime_from_buffer(raw)
+            if detected_ct:
+                content_type = detected_ct
+                ext = _extension_from_content_type(detected_ct)
         if tag == "image":
             return cache_image_from_bytes(raw, ext or ".jpg"), "image"
         if tag == "video":
@@ -622,6 +626,48 @@ def _extension_from_content_type(content_type: str | None) -> str:
     if not content_type:
         return ""
     return mimetypes.guess_extension(content_type.split(";", 1)[0].strip()) or ""
+
+
+def _detect_mime_from_buffer(raw: bytes) -> str | None:
+    """Detect MIME type from buffer magic bytes for common media formats."""
+    if raw[:8] == b"\x89PNG\r\n\x1a\n":
+        return "image/png"
+    if raw[:3] == b"\xff\xd8\xff":
+        return "image/jpeg"
+    if raw[:6] in {b"GIF87a", b"GIF89a"}:
+        return "image/gif"
+    if raw[:4] == b"RIFF" and raw[8:12] == b"WEBP":
+        return "image/webp"
+    if raw[:4] == b"%PDF":
+        return "application/pdf"
+    if raw[:4] in {b"PK\x03\x04", b"PK\x05\x06", b"PK\x07\x08"}:
+        return "application/zip"
+    if len(raw) >= 12 and raw[4:8] == b"ftyp":
+        return "video/mp4"
+    return None
+
+
+def _format_forwarded_sender_prefix(item: dict[str, Any]) -> str:
+    """Format the sender prefix for a forwarded message item.
+
+    Matches openclaw's formatSenderPrefix: ``[sender timestamp] ``
+    """
+    parts: list[str] = []
+    sender = item.get("sender")
+    if isinstance(sender, dict):
+        email = _normalize_email(sender.get("email"))
+        code = _str_or_none(sender.get("employee_code"))
+        if email:
+            parts.append(email)
+        elif code:
+            parts.append(code)
+    sent_time = item.get("message_sent_time")
+    if isinstance(sent_time, (int, float)) and sent_time > 0:
+        ts = datetime.datetime.fromtimestamp(
+            int(sent_time), tz=datetime.timezone.utc
+        ).strftime("%Y-%m-%dT%H:%M:%SZ")
+        parts.append(ts)
+    return f"[{' '.join(parts)}] " if parts else ""
 
 
 def _normalize_email(value: Any) -> str | None:
