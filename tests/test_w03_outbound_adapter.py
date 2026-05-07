@@ -175,6 +175,41 @@ async def test_t03_07_coalescer_default_merges_same_target(monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.requires_hermes
+async def test_t03_12_long_text_bypasses_coalescer(monkeypatch):
+    if not adapter._HAS_HERMES_BASE:
+        pytest.skip("requires Hermes BasePlatformAdapter truncate behavior")
+    client = FakeSeaTalkClient()
+    seatalk = adapter.SeaTalkAdapter(_config(
+        client,
+        outbound_coalescing_idle_seconds=60,
+    ))
+
+    result = await seatalk.send("EmpABC", "a" * 4100)
+
+    assert result.success is True
+    assert len(client.calls) == 2
+    assert client.calls[0][2]["text"]["content"].endswith("(1/2)")
+    assert client.calls[1][2]["text"]["content"].endswith("(2/2)")
+
+
+@pytest.mark.asyncio
+@pytest.mark.requires_hermes
+async def test_t03_13_long_text_failure_propagates_with_coalescing_enabled(monkeypatch):
+    if not adapter._HAS_HERMES_BASE:
+        pytest.skip("requires Hermes BasePlatformAdapter truncate behavior")
+    seatalk = adapter.SeaTalkAdapter(_config(
+        FailingClient(),
+        outbound_coalescing_idle_seconds=60,
+    ))
+
+    result = await seatalk.send("EmpABC", "a" * 4100)
+
+    assert result.success is False
+    assert "boom" in result.error
+
+
+@pytest.mark.asyncio
 async def test_t03_08_coalescer_isolates_threads_and_can_disable(monkeypatch):
     client = FakeSeaTalkClient()
     seatalk = adapter.SeaTalkAdapter(_config(

@@ -148,7 +148,12 @@ async def test_t08_02_send_to_platform_supports_seatalk(monkeypatch, tmp_path):
     )
 
     assert result == {"success": True, "message_id": "m-3"}
-    assert runtime_adapter.calls[0] == ("text", "group/GroupABC", "hello", {"thread_id": "ThreadXYZ"})
+    assert runtime_adapter.calls[0] == (
+        "text",
+        "group/GroupABC",
+        "hello",
+        {"_skip_coalescing": True, "thread_id": "ThreadXYZ"},
+    )
     assert runtime_adapter.calls[1][0] == "image"
     assert runtime_adapter.calls[2][0] == "document"
 
@@ -190,7 +195,7 @@ def test_t08_01_send_message_supports_seatalk(monkeypatch):
 
     assert result["success"] is True
     assert result["note"] == "Sent to seatalk home channel (chat_id: group/Home)"
-    assert runtime_adapter.calls == [("text", "group/Home", "hello", None)]
+    assert runtime_adapter.calls == [("text", "group/Home", "hello", {"_skip_coalescing": True})]
 
 
 def test_t08_05_cron_target(monkeypatch):

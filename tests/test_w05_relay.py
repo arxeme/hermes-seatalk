@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import socket
 from collections.abc import Awaitable, Callable
+from unittest.mock import MagicMock
 
 from aiohttp import web
 import pytest
 
-from hermes_seatalk.relay import SeaTalkRelayClient
+from hermes_seatalk.relay import SeaTalkRelayClient, _apply_tcp_keepalive
 
 
 async def _noop_sleep(_delay):
@@ -206,3 +208,62 @@ async def test_t05_06_shutdown_exits_relay_client():
         assert client.connected.is_set() is False
     finally:
         await runner.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_t05_07_replaced_triggers_reconnect():
+    """replaced message must not set auth_failed; client reconnects after backoff."""
+    count = 0
+    second_auth = asyncio.Event()
+    release = asyncio.Event()
+
+    async def handler(ws):
+        nonlocal count
+        count += 1
+        await ws.receive_json()
+        await ws.send_json({"type": "auth_ok"})
+        if count == 1:
+            await ws.send_json({"type": "replaced"})
+        else:
+            second_auth.set()
+            await release.wait()
+
+    runner, url = await _start_ws_server(handler)
+    client = _client(url, lambda _event, _source: None)
+    try:
+        assert await client.start(timeout=1) is True
+        await asyncio.wait_for(second_auth.wait(), timeout=2)
+        assert count >= 2
+        assert client.auth_failed is False
+    finally:
+        release.set()
+        await client.stop()
+        await runner.cleanup()
+
+
+def test_t05_08_tcp_keepalive_applied_to_socket():
+    """_apply_tcp_keepalive sets SO_KEEPALIVE on the underlying socket."""
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        mock_ws = MagicMock()
+        mock_ws._conn.transport.get_extra_info.return_value = sock
+
+        _apply_tcp_keepalive(mock_ws, idle_seconds=60)
+
+        assert sock.getsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE) != 0
+    finally:
+        sock.close()
+
+
+def test_t05_09_tcp_keepalive_silent_on_missing_transport():
+    """_apply_tcp_keepalive does not raise when transport has no socket."""
+    mock_ws = MagicMock()
+    mock_ws._conn.transport.get_extra_info.return_value = None
+    _apply_tcp_keepalive(mock_ws)  # must not raise
+
+
+def test_t05_10_tcp_keepalive_silent_on_broken_transport():
+    """_apply_tcp_keepalive does not raise when _conn is inaccessible."""
+    mock_ws = MagicMock()
+    mock_ws._conn.transport.get_extra_info.side_effect = AttributeError("no transport")
+    _apply_tcp_keepalive(mock_ws)  # must not raise

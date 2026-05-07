@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import socket as _socket
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -13,6 +14,31 @@ import aiohttp
 
 logger = logging.getLogger(__name__)
 DispatchFn = Callable[[dict[str, Any], str], Awaitable[None]]
+
+_TCP_KEEPALIVE_IDLE_SECONDS = 60
+
+
+def _apply_tcp_keepalive(
+    ws: aiohttp.ClientWebSocketResponse,
+    idle_seconds: int = _TCP_KEEPALIVE_IDLE_SECONDS,
+) -> None:
+    """Enable TCP keepalive on the underlying WebSocket socket.
+
+    Matches openclaw's ``response.socket.setKeepAlive(true, 60_000)`` applied
+    in the ``upgrade`` event handler.  Best-effort: silently ignored on
+    platforms that don't support SO_KEEPALIVE or when the transport is
+    unavailable.
+    """
+    try:
+        transport = ws._conn.transport  # type: ignore[attr-defined]
+        sock: _socket.socket | None = transport.get_extra_info("socket")
+        if sock is None:
+            return
+        sock.setsockopt(_socket.SOL_SOCKET, _socket.SO_KEEPALIVE, 1)
+        if hasattr(_socket, "TCP_KEEPIDLE"):
+            sock.setsockopt(_socket.IPPROTO_TCP, _socket.TCP_KEEPIDLE, idle_seconds)
+    except Exception:  # noqa: BLE001
+        pass
 
 
 class SeaTalkRelayClient:
@@ -26,7 +52,7 @@ class SeaTalkRelayClient:
         dispatch: DispatchFn,
         reconnect_initial_seconds: float = 1.0,
         reconnect_max_seconds: float = 30.0,
-        heartbeat_timeout_seconds: float = 60.0,
+        heartbeat_timeout_seconds: float = 75.0,
         sleep_fn=asyncio.sleep,
     ):
         self.relay_url = relay_url
@@ -100,6 +126,7 @@ class SeaTalkRelayClient:
         assert self._session is not None
         async with self._session.ws_connect(self.relay_url) as ws:
             self._ws = ws
+            _apply_tcp_keepalive(ws)
             await ws.send_json({
                 "type": "auth",
                 "appId": self.app_id,
@@ -145,8 +172,7 @@ class SeaTalkRelayClient:
                 elif msg_type == "ping":
                     await ws.send_json({"type": "pong"})
                 elif msg_type == "replaced":
-                    self.auth_failed = True
-                    self.last_error = "connection replaced by another instance"
+                    logger.info("SeaTalk relay connection replaced by another instance; will reconnect")
                     return
                 else:
                     logger.info("SeaTalk relay unknown message type: %s", msg_type)

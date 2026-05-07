@@ -233,13 +233,23 @@ async def test_t2_04_05_network_failure_isolated_as_retrying():
 
 
 @pytest.mark.asyncio
-async def test_t2_04_06_replaced_isolated_as_auth_failed():
+async def test_t2_04_06_replaced_triggers_reconnect_not_auth_failed():
+    """replaced must not set auth_failed; client reconnects and staging is unaffected."""
     release = asyncio.Event()
+    reconnected = asyncio.Event()
+
+    attempt = 0
 
     async def replaced_handler(ws):
+        nonlocal attempt
+        attempt += 1
         await ws.receive_json()
         await ws.send_json({"type": "auth_ok"})
-        await ws.send_json({"type": "replaced"})
+        if attempt == 1:
+            await ws.send_json({"type": "replaced"})
+        else:
+            reconnected.set()
+            await release.wait()
 
     async def ok_handler(ws):
         await ws.receive_json()
@@ -248,10 +258,25 @@ async def test_t2_04_06_replaced_isolated_as_auth_failed():
 
     runner_default, default_url = await _start_ws_server(replaced_handler)
     runner_staging, staging_url = await _start_ws_server(ok_handler)
-    seatalk = _adapter(default_url, staging_url)
+    # Use fast reconnect so the test doesn't wait 60s for the retry
+    seatalk = adapter.SeaTalkAdapter(_config(
+        accounts={
+            "default": _relay_account("app-default", default_url),
+            "staging": _relay_account("app-staging", staging_url),
+        },
+        clients={"default": FakeClient(), "staging": FakeClient()},
+        dispatchers={"default": FakeDispatcher(), "staging": FakeDispatcher()},
+        relay_connect_timeout_seconds=0.1,
+        relay_heartbeat_timeout_seconds=0.05,
+        relay_state_poll_seconds=0.01,
+        relay_reconnect_initial_seconds=0,
+        relay_reconnect_max_seconds=0,
+    ))
     try:
         assert await seatalk.connect() is True
-        await _wait_for_state(seatalk, "default", "auth_failed")
+        # Client must reconnect after replaced, not enter auth_failed
+        await asyncio.wait_for(reconnected.wait(), timeout=2)
+        assert seatalk._runtimes["default"].auth_failed is False
         assert seatalk._runtimes["staging"].state == "running"
     finally:
         release.set()
