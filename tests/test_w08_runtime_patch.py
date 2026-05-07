@@ -123,6 +123,36 @@ def test_t08_09_home_channel_legacy_without_thread_id():
     assert not hasattr(home, "thread_id")
 
 
+def test_t08_10_patched_home_channel_legacy_without_thread_id(monkeypatch):
+    import gateway.config as gateway_config
+    from gateway.config import GatewayConfig
+
+    class LegacyHomeChannel:
+        def __init__(self, *, platform, chat_id, name):
+            self.platform = platform
+            self.chat_id = chat_id
+            self.name = name
+
+    platform = _register_platform_entry()
+    original = getattr(GatewayConfig.get_home_channel, "_seatalk_original", GatewayConfig.get_home_channel)
+    monkeypatch.setattr(GatewayConfig, "get_home_channel", original)
+    monkeypatch.setattr(gateway_config, "HomeChannel", LegacyHomeChannel)
+    monkeypatch.setenv("SEATALK_HOME_CHANNEL", "default:group/Home")
+    monkeypatch.setenv("SEATALK_HOME_CHANNEL_THREAD_ID", "ThreadHome")
+
+    seatalk_adapter._patch_home_channel()
+    cfg = GatewayConfig.__new__(GatewayConfig)
+    cfg.platforms = {
+        platform: SimpleNamespace(home_channel=None, extra={})
+    }
+
+    home = cfg.get_home_channel(platform)
+
+    assert home.chat_id == "default:group/Home"
+    assert home.name == "SeaTalk Home"
+    assert not hasattr(home, "thread_id")
+
+
 @pytest.mark.asyncio
 async def test_t08_02_send_to_platform_supports_seatalk(monkeypatch, tmp_path):
     import gateway.run as gateway_run

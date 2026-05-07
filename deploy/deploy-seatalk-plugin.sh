@@ -8,8 +8,11 @@ set -euo pipefail
 #   SERVER_HOST=10.197.0.210
 #   VM_NAME=vm-...
 #   REMOTE_USER=openclaw
+#   REMOTE_HERMES_HOME=/home/<user>/.hermes
+#   REMOTE_HERMES_INSTALL_DIR=/home/<user>/hermes-agent
+#   REMOTE_PLUGIN_DIR=<REMOTE_HERMES_HOME>/plugins/seatalk-platform
 #
-# The script replaces only the plugin tree under HERMES_HOME/plugins/seatalk.
+# The script replaces only the plugin tree under HERMES_HOME/plugins/seatalk-platform.
 # Hermes runtime state under HERMES_HOME is preserved, except when a runtime
 # env file is explicitly supplied or deploy/.env exists.
 
@@ -43,7 +46,7 @@ Options:
   --remote-user USER        VM user override
   --hermes-home PATH        VM HERMES_HOME (default: /home/<user>/.hermes)
   --install-dir PATH        VM Hermes install dir (default: /home/<user>/hermes-agent)
-  --plugin-dir PATH         VM plugin dir (default: <HERMES_HOME>/plugins/seatalk)
+  --plugin-dir PATH         VM plugin dir (default: <HERMES_HOME>/plugins/<plugin-id>)
   --plugin-id NAME          Hermes plugin id to enable (default: seatalk-platform)
   --keep-local-archive      keep generated archive directory
   --keep-remote-archive     keep VM /tmp archive
@@ -172,7 +175,7 @@ REMOTE_USER="${REMOTE_USER_OVERRIDE:-${REMOTE_USER:-${HERMES_RELEASE_USER:-}}}"
 
 REMOTE_HERMES_HOME="${REMOTE_HERMES_HOME_OVERRIDE:-${REMOTE_HERMES_HOME:-${HERMES_RELEASE_HOME:-/home/${REMOTE_USER}/.hermes}}}"
 REMOTE_HERMES_INSTALL_DIR="${REMOTE_HERMES_INSTALL_DIR_OVERRIDE:-${REMOTE_HERMES_INSTALL_DIR:-${HERMES_RELEASE_INSTALL_DIR:-/home/${REMOTE_USER}/hermes-agent}}}"
-REMOTE_PLUGIN_DIR="${REMOTE_PLUGIN_DIR_OVERRIDE:-${REMOTE_PLUGIN_DIR:-${REMOTE_HERMES_HOME}/plugins/seatalk}}"
+REMOTE_PLUGIN_DIR="${REMOTE_PLUGIN_DIR_OVERRIDE:-${REMOTE_PLUGIN_DIR:-${REMOTE_HERMES_HOME}/plugins/${PLUGIN_ID}}}"
 
 if [[ "$RUNTIME_ENV_FILE" == "AUTO" ]]; then
     if [[ -f "$SCRIPT_DIR/.env" ]]; then
