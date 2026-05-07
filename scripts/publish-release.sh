@@ -3,11 +3,15 @@
 # Requires Git >= 2.15 (git worktree add --orphan).
 #
 # Usage:
-#   ./scripts/publish-release.sh [<version-tag>]
+#   ./scripts/publish-release.sh [--tag <version-tag>] [--message <commit-message>]
 #
 # Examples:
-#   ./scripts/publish-release.sh           # update publish branch only
-#   ./scripts/publish-release.sh v1.2.0    # update publish branch + create annotated tag
+#   ./scripts/publish-release.sh
+#   ./scripts/publish-release.sh --tag v1.2.0
+#   ./scripts/publish-release.sh --tag v1.2.0 --message "publish: release v1.2.0 runtime"
+#
+# Backward compatibility:
+#   ./scripts/publish-release.sh v1.2.0
 set -euo pipefail
 
 # Paths included in the publish branch (no docs/, tests/, scripts/, deploy/).
@@ -24,7 +28,73 @@ RELEASE_PATHS=(
 
 RELEASE_BRANCH="publish"
 SOURCE_REF="main"
-VERSION="${1:-}"
+VERSION=""
+COMMIT_MESSAGE=""
+
+usage() {
+    sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'
+}
+
+require_value() {
+    local option="$1"
+    local value="${2:-}"
+    if [[ -z "$value" ]]; then
+        echo "Error: $option requires a value." >&2
+        exit 1
+    fi
+}
+
+while [[ "$#" -gt 0 ]]; do
+    case "$1" in
+        --tag)
+            require_value "$1" "${2:-}"
+            if [[ -n "$VERSION" ]]; then
+                echo "Error: tag specified more than once." >&2
+                exit 1
+            fi
+            VERSION="$2"
+            shift 2
+            ;;
+        --tag=*)
+            if [[ -n "$VERSION" ]]; then
+                echo "Error: tag specified more than once." >&2
+                exit 1
+            fi
+            VERSION="${1#--tag=}"
+            require_value "--tag" "$VERSION"
+            shift
+            ;;
+        --message|-m)
+            require_value "$1" "${2:-}"
+            COMMIT_MESSAGE="$2"
+            shift 2
+            ;;
+        --message=*|-m=*)
+            COMMIT_MESSAGE="${1#*=}"
+            require_value "--message" "$COMMIT_MESSAGE"
+            shift
+            ;;
+        --help|-h)
+            usage
+            exit 0
+            ;;
+        --*)
+            echo "Error: unknown option: $1" >&2
+            usage >&2
+            exit 1
+            ;;
+        *)
+            # Legacy positional tag argument. Prefer --tag for new usage.
+            if [[ -n "$VERSION" ]]; then
+                echo "Error: unexpected positional argument: $1" >&2
+                usage >&2
+                exit 1
+            fi
+            VERSION="$1"
+            shift
+            ;;
+    esac
+done
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel)"
@@ -43,6 +113,7 @@ SOURCE_SHORT="$(git -C "$REPO_ROOT" rev-parse --short "$SOURCE_REF" 2>/dev/null)
 echo "Source : $SOURCE_REF ($SOURCE_SHORT)"
 echo "Target : $RELEASE_BRANCH"
 [[ -n "$VERSION" ]] && echo "Tag    : $VERSION"
+[[ -n "$COMMIT_MESSAGE" ]] && echo "Message: $COMMIT_MESSAGE"
 echo ""
 
 # Prepare worktree on the release branch (orphan if first publish).
@@ -83,8 +154,10 @@ if git -C "$TMP_WORKTREE" diff --cached --quiet 2>/dev/null; then
     echo "No changes — publish branch is already up to date."
     echo "HEAD : $RELEASE_COMMIT"
 else
-    COMMIT_MSG="publish: publish runtime plugin files"
-    [[ -n "$VERSION" ]] && COMMIT_MSG="$COMMIT_MSG ($VERSION)"
+    COMMIT_MSG="${COMMIT_MESSAGE:-publish: publish runtime plugin files}"
+    if [[ -z "$COMMIT_MESSAGE" && -n "$VERSION" ]]; then
+        COMMIT_MSG="$COMMIT_MSG ($VERSION)"
+    fi
     git -C "$TMP_WORKTREE" commit -q -m "$COMMIT_MSG"
     RELEASE_COMMIT="$(git -C "$TMP_WORKTREE" rev-parse HEAD)"
     echo "Committed  : $RELEASE_COMMIT"
