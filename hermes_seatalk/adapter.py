@@ -519,7 +519,7 @@ class SeaTalkAdapter(BasePlatformAdapter):
                 heartbeat_timeout_seconds=_cfg_float(
                     self.config,
                     "relay_heartbeat_timeout_seconds",
-                    60.0,
+                    75.0,
                 ),
             )
             connected = await runtime.relay_client.start(
@@ -611,11 +611,18 @@ class SeaTalkAdapter(BasePlatformAdapter):
         try:
             target = await self._resolve_target(chat_id, metadata)
             runtime = self._runtime_for_target(target)
-            if runtime.config.outbound_coalescing and not (metadata or {}).get("_skip_coalescing"):
+            skip_coalescing = bool((metadata or {}).get("_skip_coalescing"))
+            should_coalesce = (
+                runtime.config.outbound_coalescing
+                and not skip_coalescing
+                and len(content) <= MAX_MESSAGE_LENGTH
+            )
+            if should_coalesce:
                 runtime.coalescers.append(target.chat_id, target.thread_id, content)
                 return SendResult(success=True, raw_response={"queued": True})
             return await self._send_text_now_for_client(runtime.client, target.chat_id, content, target.thread_id)
         except Exception as exc:  # noqa: BLE001
+            logger.warning("SeaTalk send failed: chat_id=%s error=%s", chat_id, exc)
             return SendResult(success=False, error=str(exc), retryable=isinstance(exc, SeaTalkError))
 
     async def send_typing(self, chat_id: str, metadata: dict[str, Any] | None = None) -> SendResult:
@@ -1318,7 +1325,9 @@ async def _seatalk_send_to_platform(
     if runtime_adapter is None:
         return {"error": "No live SeaTalk adapter. Is the gateway running with SeaTalk connected?"}
 
-    metadata = {"thread_id": thread_id} if thread_id else None
+    metadata: dict[str, Any] = {"_skip_coalescing": True}
+    if thread_id:
+        metadata["thread_id"] = thread_id
     results: list[Any] = []
     if message:
         entry = platform_registry.get(SEATALK_PLATFORM)
