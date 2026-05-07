@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+import pytest
 from types import ModuleType, SimpleNamespace
 
 from hermes_seatalk import adapter
@@ -226,3 +227,28 @@ def test_t01_12_seatalk_tool_skipped_without_register_tool(monkeypatch):
     adapter.register(ctx)
 
     assert len(ctx.platforms) == 1
+
+
+def test_t01_13_no_accounts_key_passes_validation(monkeypatch):
+    """Plugin installed but not configured: validate_config returns True (skip gracefully)."""
+    _clear_env(monkeypatch)
+    _set_aiohttp_available(monkeypatch)
+
+    assert adapter._validate_seatalk_config(_config()) is True
+    assert adapter._is_seatalk_connected(_config()) is True
+
+
+@pytest.mark.asyncio
+async def test_t01_14_unconfigured_adapter_connects_and_rejects_send(monkeypatch):
+    """No accounts: connect() succeeds but send() returns a clear error."""
+    _clear_env(monkeypatch)
+    _set_aiohttp_available(monkeypatch)
+
+    seatalk = adapter.SeaTalkAdapter(_config())
+    assert await seatalk.connect() is True
+
+    result = await seatalk.send("EmpABC", "hello")
+    assert result.success is False
+    assert "no accounts" in result.error.lower() or "not configured" in result.error.lower()
+
+    await seatalk.disconnect()

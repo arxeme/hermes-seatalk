@@ -36,11 +36,15 @@ def _webhook_account(**overrides):
     return account
 
 
-@pytest.mark.parametrize("accounts", [None, {}, [], "default"])
-def test_t2_00_01_accounts_missing_fails(accounts):
-    extra = {} if accounts is None else {"accounts": accounts}
+def test_t2_00_01_no_accounts_key_passes_validation():
+    # accounts key absent → plugin installed but unconfigured → skip gracefully
+    assert adapter._validate_seatalk_config(_config()) is True
 
-    assert adapter._validate_seatalk_config(_config(**extra)) is False
+
+@pytest.mark.parametrize("accounts", [{}, [], "default"])
+def test_t2_00_01b_invalid_accounts_value_fails(accounts):
+    # accounts key present but value is not a valid non-empty dict → misconfigured
+    assert adapter._validate_seatalk_config(_config(accounts=accounts)) is False
 
 
 def test_t2_00_02_enabled_false_handling():
