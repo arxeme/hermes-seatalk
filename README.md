@@ -172,6 +172,10 @@ branch. `scripts/publish-release.sh` keeps that branch limited to plugin runtime
 files and README content; it does not publish docs, tests, deploy helpers, or
 local configuration.
 
+```bash
+./scripts/publish-release.sh --tag v1.0.0 --message "publish: release v1.0.0 runtime"
+```
+
 ## Status And Troubleshooting
 
 Use Hermes status and logs to separate static configuration from runtime

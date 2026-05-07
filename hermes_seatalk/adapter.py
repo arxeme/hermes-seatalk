@@ -212,6 +212,8 @@ def _accounts_from_extra(extra: dict[str, Any]) -> dict[str, SeaTalkAccountConfi
     if not isinstance(extra, dict):
         raise ValueError("SeaTalk extra config must be a mapping")
     accounts = extra.get("accounts")
+    if accounts is None:
+        return {}
     if not isinstance(accounts, dict) or not accounts:
         raise ValueError("SeaTalk accounts config is required")
 
@@ -364,6 +366,8 @@ class SeaTalkAdapter(BasePlatformAdapter):
         self._default_account_id = self._select_default_account_id()
 
     def _select_default_account_id(self) -> str:
+        if not self._runtimes:
+            return ""
         if "default" in self._runtimes:
             return "default"
         return sorted(self._runtimes)[0]
@@ -434,6 +438,13 @@ class SeaTalkAdapter(BasePlatformAdapter):
         )
 
     async def connect(self) -> bool:
+        if not self._runtimes:
+            logger.warning(
+                "SeaTalk plugin is installed but no accounts are configured. "
+                "Run `hermes gateway setup` to configure a SeaTalk account."
+            )
+            self._mark_running()
+            return True
         try:
             results: list[bool] = []
             webhook_groups: dict[tuple[str, int, str], list[SeaTalkAccountRuntime]] = {}
@@ -741,6 +752,8 @@ class SeaTalkAdapter(BasePlatformAdapter):
         chat_id: str | None,
         metadata: dict[str, Any] | None = None,
     ) -> SeaTalkTarget:
+        if not self._runtimes:
+            raise ValueError("SeaTalk has no accounts configured")
         raw_target = (chat_id or "").strip()
         metadata = metadata or {}
         if not raw_target or raw_target == SEATALK_PLATFORM:
