@@ -507,6 +507,13 @@ class SeaTalkOpenAPIClient:
 
         return result
 
+    def remember_employee_email(self, email: str | None, employee_code: str | None) -> None:
+        key = (email or "").strip().lower()
+        code = (employee_code or "").strip()
+        if not key or not code:
+            return
+        self._email_cache[key] = (code, self._now() + EMAIL_POSITIVE_TTL_SECONDS)
+
     async def get_group_chat_history(
         self,
         group_id: str,

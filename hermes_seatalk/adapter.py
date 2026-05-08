@@ -36,6 +36,7 @@ except Exception:  # pragma: no cover - lets the plugin import outside Hermes.
 from .tools import register_seatalk_tool
 from .client import (
     SeaTalkError,
+    SeaTalkNetworkError,
     SeaTalkOpenAPIClient,
     build_file_message,
     build_image_message,
@@ -343,6 +344,28 @@ def _validate_seatalk_config(config: Any) -> bool:
 def _is_seatalk_connected(config: Any) -> bool:
     """Hermes startup check; intentionally static, not live adapter health."""
     return _validate_seatalk_config(config)
+
+
+def _remember_event_employee_email(client: Any, payload: dict[str, Any]) -> None:
+    remember = getattr(client, "remember_employee_email", None)
+    if not callable(remember):
+        return
+    event = payload.get("event")
+    if not isinstance(event, dict):
+        event = payload
+    candidates: list[tuple[Any, Any]] = [
+        (event.get("email"), event.get("employee_code")),
+    ]
+    direct_sender = event.get("sender")
+    if isinstance(direct_sender, dict):
+        candidates.append((direct_sender.get("email"), direct_sender.get("employee_code")))
+    message = event.get("message")
+    if isinstance(message, dict):
+        sender = message.get("sender")
+        if isinstance(sender, dict):
+            candidates.append((sender.get("email"), sender.get("employee_code")))
+    for email, employee_code in candidates:
+        remember(email, employee_code)
 
 
 class SeaTalkAdapter(BasePlatformAdapter):
@@ -745,6 +768,7 @@ class SeaTalkAdapter(BasePlatformAdapter):
                 payload_app_id,
             )
             return
+        _remember_event_employee_email(runtime.client, event)
         self.inbound_events.append((event, source))
         handler = self._seatalk_event_handler
         if handler:
@@ -780,7 +804,13 @@ class SeaTalkAdapter(BasePlatformAdapter):
                     f"SeaTalk account '{account_id}' is not ready (state={runtime.state}); "
                     "cannot resolve email target"
                 )
-            resolved = await runtime.client.get_employee_code_by_email([target.chat_id])
+            try:
+                resolved = await runtime.client.get_employee_code_by_email([target.chat_id])
+            except SeaTalkNetworkError as exc:
+                raise SeaTalkNetworkError(
+                    "SeaTalk email lookup failed while resolving "
+                    f"'{target.chat_id}' to employee_code for account '{account_id}': {exc}"
+                ) from exc
             employee_code = resolved.get(target.chat_id)
             if not employee_code:
                 raise ValueError(
@@ -1302,6 +1332,19 @@ def _patch_send_to_platform() -> None:
     send_message_tool._send_to_platform = _patched_send_to_platform
 
 
+async def _run_on_gateway_loop(runner: Any, make_coro: Any) -> Any:
+    gateway_loop = getattr(runner, "_gateway_loop", None)
+    current_loop = asyncio.get_running_loop()
+    if (
+        gateway_loop is not None
+        and gateway_loop.is_running()
+        and gateway_loop is not current_loop
+    ):
+        future = asyncio.run_coroutine_threadsafe(make_coro(), gateway_loop)
+        return await asyncio.wrap_future(future)
+    return await make_coro()
+
+
 async def _seatalk_send_to_platform(
     platform: Any,
     chat_id: str,
@@ -1334,7 +1377,14 @@ async def _seatalk_send_to_platform(
         entry = platform_registry.get(SEATALK_PLATFORM)
         max_len = entry.max_message_length if entry and entry.max_message_length else MAX_MESSAGE_LENGTH
         for chunk in BasePlatformAdapter.truncate_message(message, max_len):
-            result = await runtime_adapter.send(chat_id=chat_id, content=chunk, metadata=metadata)
+            result = await _run_on_gateway_loop(
+                runner,
+                lambda chunk=chunk: runtime_adapter.send(
+                    chat_id=chat_id,
+                    content=chunk,
+                    metadata=metadata,
+                ),
+            )
             if not getattr(result, "success", False):
                 return {"error": f"SeaTalk send failed: {getattr(result, 'error', 'unknown')}"}
             results.append(result)
@@ -1342,9 +1392,25 @@ async def _seatalk_send_to_platform(
     for media_path, _is_voice in media_files or []:
         ext = Path(media_path).suffix.lower()
         if ext in {".jpg", ".jpeg", ".png", ".webp", ".gif"}:
-            result = await runtime_adapter.send_image_file(chat_id, media_path, caption="", metadata=metadata)
+            result = await _run_on_gateway_loop(
+                runner,
+                lambda media_path=media_path: runtime_adapter.send_image_file(
+                    chat_id,
+                    media_path,
+                    caption="",
+                    metadata=metadata,
+                ),
+            )
         else:
-            result = await runtime_adapter.send_document(chat_id, media_path, caption="", metadata=metadata)
+            result = await _run_on_gateway_loop(
+                runner,
+                lambda media_path=media_path: runtime_adapter.send_document(
+                    chat_id,
+                    media_path,
+                    caption="",
+                    metadata=metadata,
+                ),
+            )
         if not getattr(result, "success", False):
             return {"error": f"SeaTalk media send failed: {getattr(result, 'error', 'unknown')}"}
         results.append(result)
