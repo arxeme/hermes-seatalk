@@ -228,6 +228,35 @@ def test_t08_01_send_message_supports_seatalk(monkeypatch):
     assert runtime_adapter.calls == [("text", "group/Home", "hello", {"_skip_coalescing": True})]
 
 
+@pytest.mark.asyncio
+async def test_t08_11_send_to_platform_accepts_force_document(monkeypatch):
+    import gateway.run as gateway_run
+    import tools.send_message_tool as send_message_tool
+
+    platform = _register_platform_entry()
+    original_send = getattr(send_message_tool._send_to_platform, "_seatalk_original", send_message_tool._send_to_platform)
+    monkeypatch.setattr(send_message_tool, "_send_to_platform", original_send)
+    seatalk_adapter._patch_send_to_platform()
+
+    runtime_adapter = FakeRuntimeAdapter()
+    monkeypatch.setattr(
+        gateway_run,
+        "_gateway_runner_ref",
+        lambda: SimpleNamespace(adapters={platform: runtime_adapter}),
+    )
+
+    result = await send_message_tool._send_to_platform(
+        platform,
+        SimpleNamespace(extra={}),
+        "group/Home",
+        "hello",
+        force_document=True,
+    )
+
+    assert result == {"success": True, "message_id": "m-1"}
+    assert runtime_adapter.calls == [("text", "group/Home", "hello", {"_skip_coalescing": True})]
+
+
 def test_t08_05_cron_target(monkeypatch):
     import cron.scheduler as scheduler
 
