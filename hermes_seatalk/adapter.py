@@ -1278,7 +1278,7 @@ def _patch_send_to_platform() -> None:
     if getattr(original, "_seatalk_patched", False):
         return
 
-    async def _patched_send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None):
+    async def _patched_send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None, **kwargs):
         if _platform_value(platform) == SEATALK_PLATFORM:
             return await _seatalk_send_to_platform(
                 platform,
@@ -1294,6 +1294,7 @@ def _patch_send_to_platform() -> None:
             message,
             thread_id=thread_id,
             media_files=media_files,
+            **kwargs,
         )
 
     _patched_send_to_platform._seatalk_patched = True  # type: ignore[attr-defined]
