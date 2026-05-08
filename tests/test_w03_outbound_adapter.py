@@ -32,6 +32,9 @@ class FakeSeaTalkClient:
     async def get_employee_code_by_email(self, emails):
         return {email: self.email_map.get(email) for email in emails}
 
+    def remember_employee_email(self, email, employee_code):
+        self.email_map[email.strip().lower()] = employee_code.strip()
+
     async def download_media(self, _url):
         return b"image-bytes", "image/png"
 
@@ -301,6 +304,37 @@ async def test_t03_11_per_account_coalescing_isolation(monkeypatch):
         "tag": "text",
         "text": {"format": 1, "content": "queued"},
     }, None)]
+
+
+@pytest.mark.asyncio
+async def test_t03_14_inbound_event_caches_email_for_later_send(monkeypatch):
+    client = FakeSeaTalkClient()
+    seatalk = adapter.SeaTalkAdapter(_config(
+        client,
+        outbound_coalescing=False,
+    ))
+
+    await seatalk._dispatch_runtime_event("default", {
+        "event_id": "event-1",
+        "event_type": "message_from_bot_subscriber",
+        "app_id": "app-id",
+        "event": {
+            "employee_code": "EmpABC",
+            "email": "Alice@Example.com",
+            "message": {
+                "message_id": "msg-1",
+                "tag": "text",
+                "text": {"plain_text": "hello"},
+            },
+        },
+    }, "relay")
+    result = await seatalk.send("alice@example.com", "reply")
+
+    assert result.success is True
+    assert client.calls[-1] == ("single", "EmpABC", {
+        "tag": "text",
+        "text": {"format": 1, "content": "reply"},
+    }, None)
 
 
 def test_t08_target_parser_full_formats():

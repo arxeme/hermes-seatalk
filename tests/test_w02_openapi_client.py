@@ -254,3 +254,13 @@ async def test_t02_07_email_lookup_uses_active_employee_and_cache():
     assert result == {"alice@example.com": "EmpABC", "bob@example.com": None}
     assert cached == {"alice@example.com": "EmpABC", "bob@example.com": None}
     assert len(session.requests) == 2
+
+
+@pytest.mark.asyncio
+async def test_t02_08_remember_employee_email_seeds_lookup_cache():
+    client = _client(FakeSession([]))
+
+    client.remember_employee_email("Alice@Example.com", "EmpABC")
+    result = await client.get_employee_code_by_email(["alice@example.com"])
+
+    assert result == {"alice@example.com": "EmpABC"}

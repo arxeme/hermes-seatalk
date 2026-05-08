@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import json
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -255,6 +257,47 @@ async def test_t08_11_send_to_platform_accepts_force_document(monkeypatch):
 
     assert result == {"success": True, "message_id": "m-1"}
     assert runtime_adapter.calls == [("text", "group/Home", "hello", {"_skip_coalescing": True})]
+
+
+@pytest.mark.asyncio
+async def test_t08_12_send_to_platform_uses_gateway_loop(monkeypatch):
+    import gateway.run as gateway_run
+
+    class LoopCapturingRuntimeAdapter(FakeRuntimeAdapter):
+        async def send(self, chat_id, content, metadata=None):
+            self.calls.append(("text", chat_id, content, metadata, asyncio.get_running_loop()))
+            return SendResult(success=True, message_id=f"m-{len(self.calls)}")
+
+    platform = _register_platform_entry()
+    runtime_adapter = LoopCapturingRuntimeAdapter()
+    gateway_loop = asyncio.new_event_loop()
+    ready = threading.Event()
+
+    def run_loop():
+        asyncio.set_event_loop(gateway_loop)
+        ready.set()
+        gateway_loop.run_forever()
+
+    thread = threading.Thread(target=run_loop)
+    thread.start()
+    ready.wait(timeout=2)
+    try:
+        monkeypatch.setattr(
+            gateway_run,
+            "_gateway_runner_ref",
+            lambda: SimpleNamespace(adapters={platform: runtime_adapter}, _gateway_loop=gateway_loop),
+        )
+
+        result = await seatalk_adapter._seatalk_send_to_platform(platform, "EmpABC", "hello")
+
+        assert result == {"success": True, "message_id": "m-1"}
+        assert runtime_adapter.calls == [
+            ("text", "EmpABC", "hello", {"_skip_coalescing": True}, gateway_loop)
+        ]
+    finally:
+        gateway_loop.call_soon_threadsafe(gateway_loop.stop)
+        thread.join(timeout=2)
+        gateway_loop.close()
 
 
 def test_t08_05_cron_target(monkeypatch):
