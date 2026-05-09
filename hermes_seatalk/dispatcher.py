@@ -88,7 +88,7 @@ DEFAULT_DEDUP_TTL_SECONDS = 30 * 60
 DEFAULT_DEDUP_MAX_SIZE = 1000
 DEFAULT_DEBOUNCE_IDLE_SECONDS = 1.5
 DEFAULT_DEBOUNCE_MAX_SECONDS = 5.0
-DEFAULT_MEDIA_ALLOW_HOSTS = {"openapi.seatalk.io"}
+DEFAULT_MEDIA_ALLOW_HOSTS: set[str] = set()  # empty = allow any HTTPS host
 MAX_INBOUND_RAW_BYTES = 250 * 1024 * 1024  # 250 MB, matches openclaw limit
 
 
@@ -142,7 +142,7 @@ class SeaTalkEventDispatcher:
         self.emit = emit
         self.media_allow_hosts = {
             host.strip().lower()
-            for host in (media_allow_hosts or DEFAULT_MEDIA_ALLOW_HOSTS)
+            for host in (media_allow_hosts if media_allow_hosts is not None else DEFAULT_MEDIA_ALLOW_HOSTS)
             if host and host.strip()
         }
         self.dedup_ttl_seconds = dedup_ttl_seconds
@@ -458,7 +458,7 @@ class SeaTalkEventDispatcher:
         parsed = urlsplit(url)
         if parsed.scheme != "https":
             raise ValueError(f"only https media URLs are allowed ({parsed.scheme or 'missing'} URL)")
-        if parsed.hostname is None or parsed.hostname.lower() not in self.media_allow_hosts:
+        if self.media_allow_hosts and (parsed.hostname is None or parsed.hostname.lower() not in self.media_allow_hosts):
             raise ValueError(f"media host is not allowed ({parsed.hostname or 'missing'})")
         download = getattr(self.client, "download_media", None)
         if not download:
@@ -476,21 +476,26 @@ class SeaTalkEventDispatcher:
         if len(raw) > MAX_INBOUND_RAW_BYTES:
             mb = len(raw) / 1024 / 1024
             raise ValueError(f"SeaTalk inbound media too large: {mb:.1f}MB exceeds 250MB limit")
-        ext = Path(parsed.path).suffix or _extension_from_content_type(content_type)
+        ext = Path(parsed.path).suffix
         if not ext and content_type in {"application/octet-stream", ""}:
             detected_ct = _detect_mime_from_buffer(raw)
             if detected_ct:
                 content_type = detected_ct
                 ext = _extension_from_content_type(detected_ct)
+        if not ext:
+            ext = _extension_from_content_type(content_type)
         if tag == "image":
-            return cache_image_from_bytes(raw, ext or ".jpg"), "image"
+            return cache_image_from_bytes(raw, ext or ".jpg"), content_type or "image/jpeg"
         if tag == "video":
-            return cache_video_from_bytes(raw, ext or ".mp4"), "video"
+            return cache_video_from_bytes(raw, ext or ".mp4"), content_type or "video/mp4"
         filename = "document"
         file_data = message.get("file")
         if isinstance(file_data, dict):
             filename = str(file_data.get("filename") or filename)
-        return cache_document_from_bytes(raw, filename), "document"
+        if not Path(filename).suffix and ext:
+            filename = f"{filename}{ext}"
+        document_type = content_type or mimetypes.guess_type(filename)[0] or "application/octet-stream"
+        return cache_document_from_bytes(raw, filename), document_type
 
     async def _flush_after(self, key: str, delay: float) -> None:
         try:
@@ -608,9 +613,9 @@ class _FallbackPlatform:
 def _message_type(media_types: list[str]) -> MessageType:
     if not media_types:
         return MessageType.TEXT
-    if media_types[0] == "image":
+    if media_types[0] == "image" or media_types[0].startswith("image/"):
         return MessageType.PHOTO
-    if media_types[0] == "video":
+    if media_types[0] == "video" or media_types[0].startswith("video/"):
         return MessageType.VIDEO
     return MessageType.DOCUMENT
 
