@@ -226,7 +226,7 @@ async def test_t06_07_forwarded_includes_media(monkeypatch):
 
     event = fake_adapter.events[0]
     assert event.media_urls != [], "media_urls should not be empty for forwarded image"
-    assert "image" in event.media_types
+    assert "image/png" in event.media_types
 
 
 @pytest.mark.asyncio
@@ -480,7 +480,7 @@ async def test_t06_16_mime_detection_applied_when_octet_stream(monkeypatch):
 
     event = fake_adapter.events[0]
     assert event.media_urls != [], "media should be resolved via buffer MIME detection"
-    assert "image" in event.media_types
+    assert "image/png" in event.media_types
 
 
 # ── Fix 4: inbound media size limit ─────────────────────────────────────────
@@ -514,3 +514,192 @@ async def test_t06_17_inbound_media_size_limit_rejected(monkeypatch):
     assert event.media_urls == [], "oversized media must not be cached"
     errors = event.raw_message["seatalk_media_errors"]
     assert any("250MB" in e or "too large" in e.lower() for e in errors)
+
+
+# ── File (document) tag ───────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_t06_18_file_download_success_with_filename():
+    """tag=file → bytes cached as document with filename from file_data."""
+    client = FakeClient()
+    file_bytes = b"hello world text content"
+
+    async def _download(_url):
+        return file_bytes, "text/plain"
+
+    client.download_media = _download
+    client.download_error = None
+
+    fake_adapter = FakeAdapter()
+    payload = _dm_payload(event_id="event-1", text="")
+    payload["event"]["message"] = {
+        "message_id": "msg-file",
+        "tag": "file",
+        "file": {
+            "content": "https://openapi.seatalk.io/media/file-1",
+            "filename": "report.txt",
+        },
+    }
+
+    await _dispatcher(fake_adapter, client).dispatch(payload, "webhook")
+
+    event = fake_adapter.events[0]
+    assert event.text == "<media:document>"
+    assert event.media_urls != [], "document must be cached on success"
+    assert "text/plain" in event.media_types
+    cached_path = event.media_urls[0]
+    assert "report.txt" in cached_path, f"filename should be preserved in path: {cached_path}"
+
+
+@pytest.mark.asyncio
+async def test_t06_19_file_download_failure_shows_placeholder():
+    """tag=file download failure → placeholder visible, media_urls empty (MC-EDGE-MEDIA-FAIL-02)."""
+    fake_adapter = FakeAdapter()
+    payload = _dm_payload(event_id="event-1", text="")
+    payload["event"]["message"] = {
+        "message_id": "msg-file",
+        "tag": "file",
+        "file": {
+            "content": "https://openapi.seatalk.io/media/file-1",
+            "filename": "report.txt",
+        },
+    }
+
+    # FakeClient.download_media raises by default
+    await _dispatcher(fake_adapter).dispatch(payload, "webhook")
+
+    event = fake_adapter.events[0]
+    assert event.text == "<media:document>", "placeholder must be visible even on download failure"
+    assert event.media_urls == [], "no cached path when download failed"
+    assert any("download failed" in e for e in event.raw_message["seatalk_media_errors"])
+
+
+@pytest.mark.asyncio
+async def test_t06_20_file_extension_inferred_from_content_type():
+    """When file has no extension, ext is inferred from Content-Type and appended."""
+    client = FakeClient()
+    pdf_bytes = b"%PDF-1.4 content here"
+
+    async def _download(_url):
+        return pdf_bytes, "application/pdf"
+
+    client.download_media = _download
+    client.download_error = None
+
+    fake_adapter = FakeAdapter()
+    payload = _dm_payload(event_id="event-1", text="")
+    payload["event"]["message"] = {
+        "message_id": "msg-pdf",
+        "tag": "file",
+        "file": {
+            # URL has no extension, filename has no extension
+            "content": "https://openapi.seatalk.io/media/uuid-abc",
+            "filename": "report",
+        },
+    }
+
+    await _dispatcher(fake_adapter, client).dispatch(payload, "webhook")
+
+    event = fake_adapter.events[0]
+    assert event.media_urls != [], "document must be cached"
+    assert event.media_types == ["application/pdf"]
+    cached_path = event.media_urls[0]
+    assert cached_path.endswith(".pdf") or "report" in cached_path, (
+        f"extension should be inferred from content-type: {cached_path}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_t06_21_file_fallback_extension_when_no_filename():
+    """When file_data has no filename, default 'document' gets inferred extension."""
+    client = FakeClient()
+    pdf_bytes = b"%PDF-1.4 content here"
+
+    async def _download(_url):
+        return pdf_bytes, "application/pdf"
+
+    client.download_media = _download
+    client.download_error = None
+
+    fake_adapter = FakeAdapter()
+    payload = _dm_payload(event_id="event-1", text="")
+    payload["event"]["message"] = {
+        "message_id": "msg-pdf",
+        "tag": "file",
+        "file": {
+            "content": "https://openapi.seatalk.io/media/uuid-abc",
+            "filename": "",  # empty filename → default 'document'
+        },
+    }
+
+    await _dispatcher(fake_adapter, client).dispatch(payload, "webhook")
+
+    event = fake_adapter.events[0]
+    assert event.media_urls != []
+    cached_path = event.media_urls[0]
+    assert ".pdf" in cached_path, (
+        f"fallback 'document' should get .pdf extension from content-type: {cached_path}"
+    )
+
+
+# ── Fix 5: default allowlist allows any HTTPS host ────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_t06_22_cdn_url_allowed_when_allowlist_empty():
+    """Default (empty) allowlist allows download from any HTTPS host, e.g. SeaTalk CDN."""
+    client = FakeClient()
+    pdf_bytes = b"%PDF-1.4 cdn content"
+
+    async def _download(_url):
+        return pdf_bytes, "application/pdf"
+
+    client.download_media = _download
+    client.download_error = None
+
+    fake_adapter = FakeAdapter()
+    payload = _dm_payload(event_id="event-1", text="")
+    payload["event"]["message"] = {
+        "message_id": "msg-cdn",
+        "tag": "file",
+        "file": {
+            # CDN domain — NOT in the old hard-coded openapi.seatalk.io allowlist
+            "content": "https://media-cdn.seatalk.io/files/report.pdf",
+            "filename": "report.pdf",
+        },
+    }
+
+    await _dispatcher(fake_adapter, client).dispatch(payload, "webhook")
+
+    event = fake_adapter.events[0]
+    assert event.media_urls != [], "CDN URL must be downloadable when allowlist is not configured"
+    assert event.raw_message["seatalk_media_errors"] == []
+
+
+@pytest.mark.asyncio
+async def test_t06_23_explicit_allowlist_blocks_unlisted_host():
+    """When media_allow_hosts is explicitly set, URLs from other hosts are blocked."""
+    fake_adapter = FakeAdapter()
+    payload = _dm_payload(event_id="event-1", text="")
+    payload["event"]["message"] = {
+        "message_id": "msg-blocked",
+        "tag": "image",
+        "image": {"content": "https://evil.example.com/img.jpg"},
+    }
+
+    dispatcher = SeaTalkEventDispatcher(
+        adapter=fake_adapter,
+        client=FakeClient(),
+        app_id="app-id",
+        dm_policy="open",
+        media_allow_hosts={"openapi.seatalk.io"},
+        debounce_idle_seconds=0,
+        debounce_max_seconds=0,
+    )
+    await dispatcher.dispatch(payload, "webhook")
+
+    event = fake_adapter.events[0]
+    assert event.media_urls == [], "non-allowlisted host must be blocked when allowlist is configured"
+    errors = event.raw_message["seatalk_media_errors"]
+    assert any("not allowed" in e for e in errors)
