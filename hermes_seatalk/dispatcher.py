@@ -88,7 +88,7 @@ DEFAULT_DEDUP_TTL_SECONDS = 30 * 60
 DEFAULT_DEDUP_MAX_SIZE = 1000
 DEFAULT_DEBOUNCE_IDLE_SECONDS = 1.5
 DEFAULT_DEBOUNCE_MAX_SECONDS = 5.0
-DEFAULT_MEDIA_ALLOW_HOSTS: set[str] = set()  # empty = allow any HTTPS host
+DEFAULT_MEDIA_ALLOW_HOSTS: set[str] = {"openapi.seatalk.io"}
 MAX_INBOUND_RAW_BYTES = 250 * 1024 * 1024  # 250 MB, matches openclaw limit
 
 
@@ -101,8 +101,9 @@ class _InboundPart:
     media_urls: list[str] = field(default_factory=list)
     media_types: list[str] = field(default_factory=list)
     media_errors: list[str] = field(default_factory=list)
-    reply_to_message_id: str | None = None
-    reply_to_text: str | None = None
+    quoted_message_id: str | None = None
+    placeholder_only: bool = False
+    event_type: str | None = None
 
 
 @dataclass
@@ -259,10 +260,8 @@ class SeaTalkEventDispatcher:
         message_id = _str_or_none(message.get("message_id")) or _str_or_none(payload.get("event_id"))
         thread_id = _str_or_none(message.get("thread_id"))
         text, media_urls, media_types, media_errors = await self._resolve_message_content(message)
-        reply_to_id, reply_to_text, quoted_media, quoted_types = await self._resolve_quoted(message)
-        media_urls.extend(quoted_media)
-        media_types.extend(quoted_types)
-        if not text and not media_urls:
+        quoted_id = _str_or_none(message.get("quoted_message_id"))
+        if not text and not media_urls and not quoted_id:
             logger.info("SeaTalk empty DM event dropped")
             return None
 
@@ -290,8 +289,9 @@ class SeaTalkEventDispatcher:
             media_urls=media_urls,
             media_types=media_types,
             media_errors=media_errors,
-            reply_to_message_id=reply_to_id,
-            reply_to_text=reply_to_text,
+            quoted_message_id=quoted_id,
+            placeholder_only=str(message.get("tag") or "") in {"image", "file", "video"},
+            event_type=str(payload.get("event_type") or "") or None,
         )
 
     async def _normalize_group(
@@ -337,10 +337,8 @@ class SeaTalkEventDispatcher:
         message_id = _str_or_none(message.get("message_id")) or _str_or_none(payload.get("event_id"))
         thread_id = _str_or_none(message.get("thread_id"))
         text, media_urls, media_types, media_errors = await self._resolve_message_content(message)
-        reply_to_id, reply_to_text, quoted_media, quoted_types = await self._resolve_quoted(message)
-        media_urls.extend(quoted_media)
-        media_types.extend(quoted_types)
-        if not text and not media_urls:
+        quoted_id = _str_or_none(message.get("quoted_message_id"))
+        if not text and not media_urls and not quoted_id:
             logger.info("SeaTalk empty group event dropped: channel=%s", chat_id)
             return None
 
@@ -368,8 +366,9 @@ class SeaTalkEventDispatcher:
             media_urls=media_urls,
             media_types=media_types,
             media_errors=media_errors,
-            reply_to_message_id=reply_to_id,
-            reply_to_text=reply_to_text,
+            quoted_message_id=quoted_id,
+            placeholder_only=str(message.get("tag") or "") in {"image", "file", "video"},
+            event_type=str(payload.get("event_type") or "") or None,
         )
 
     async def _resolve_message_content(
@@ -431,10 +430,11 @@ class SeaTalkEventDispatcher:
             media_errors.extend(item_errs)
         return lines, media_urls, media_types, media_errors
 
-    async def _resolve_quoted(self, message: dict[str, Any]) -> tuple[str | None, str | None, list[str], list[str]]:
-        quoted_id = _str_or_none(message.get("quoted_message_id"))
-        if not quoted_id:
-            return None, None, [], []
+    async def _resolve_quoted_by_id(
+        self,
+        quoted_id: str,
+    ) -> tuple[str | None, str | None, list[str], list[str]]:
+        """Resolve a quoted message by id. Returns (id, formatted_text, media_urls, media_types)."""
         get_message = getattr(self.client, "get_message_by_id", None)
         if not get_message:
             return quoted_id, None, [], []
@@ -517,22 +517,46 @@ class SeaTalkEventDispatcher:
         if not parts:
             return
         first = parts[0]
+        chat_type = first.source.chat_type
 
-        # Collect unique quoted texts across all parts (dedup by message id).
+        # Resolve quoted messages.
+        # openclaw split: DM resolves all unique quoted_message_ids across parts (bot.ts:328-344);
+        # group resolves only the FIRST part's quoted_message_id (bot.ts:673).
+        if chat_type == "group":
+            quoted_targets = [parts[0]] if parts[0].quoted_message_id else []
+        else:
+            quoted_targets = parts
+
         seen_quoted_ids: set[str] = set()
         quoted_texts: list[str] = []
+        quoted_media_urls: list[str] = []
+        quoted_media_types: list[str] = []
         first_reply_to_id: str | None = None
         first_reply_to_text: str | None = None
-        for part in parts:
-            if part.reply_to_message_id and part.reply_to_message_id not in seen_quoted_ids:
-                seen_quoted_ids.add(part.reply_to_message_id)
-                if first_reply_to_id is None:
-                    first_reply_to_id = part.reply_to_message_id
-                    first_reply_to_text = part.reply_to_text
-                if part.reply_to_text:
-                    quoted_texts.append(part.reply_to_text)
+        for part in quoted_targets:
+            qid = part.quoted_message_id
+            if not qid or qid in seen_quoted_ids:
+                continue
+            seen_quoted_ids.add(qid)
+            reply_id, reply_text, q_media_urls, q_media_types = await self._resolve_quoted_by_id(qid)
+            if first_reply_to_id is None:
+                first_reply_to_id = reply_id
+                first_reply_to_text = reply_text
+            if reply_text:
+                quoted_texts.append(reply_text)
+            quoted_media_urls.extend(q_media_urls)
+            quoted_media_types.extend(q_media_types)
 
-        raw_text = "\n".join(part.text for part in parts if part.text).strip()
+        # Body text: text/forwarded parts contribute real content; image/file/video
+        # parts only contribute their placeholder as a fallback when no real text
+        # exists. Matches openclaw bot.ts:294-355: media tags push to mediaList only,
+        # placeholders join with " " when textParts is empty.
+        real_texts = [p.text for p in parts if p.text and not p.placeholder_only]
+        placeholder_texts = [p.text for p in parts if p.text and p.placeholder_only]
+        raw_text = "\n".join(real_texts).strip()
+        if not raw_text and placeholder_texts:
+            raw_text = " ".join(placeholder_texts)
+
         if quoted_texts:
             prefix = "\n".join(quoted_texts)
             text = f"{prefix}\n{raw_text}" if raw_text else prefix
@@ -546,16 +570,28 @@ class SeaTalkEventDispatcher:
             media_urls.extend(part.media_urls)
             media_types.extend(part.media_types)
             media_errors.extend(part.media_errors)
+        media_urls.extend(quoted_media_urls)
+        media_types.extend(quoted_media_types)
+
+        # Track was_mentioned (group only) for parity with openclaw bot.ts:706-708.
+        was_mentioned = chat_type == "group" and any(
+            p.event_type == "new_mentioned_message_received_from_group_chat" for p in parts
+        )
+
         message_type = _message_type(media_types)
+        raw_message: dict[str, Any] = {
+            "seatalk_account_id": first.raw_message.get("seatalk_account_id"),
+            "seatalk_events": [part.raw_message for part in parts],
+            "seatalk_media_errors": media_errors,
+        }
+        if chat_type == "group":
+            raw_message["seatalk_was_mentioned"] = was_mentioned
+
         event = MessageEvent(
             text=text,
             message_type=message_type,
             source=first.source,
-            raw_message={
-                "seatalk_account_id": first.raw_message.get("seatalk_account_id"),
-                "seatalk_events": [part.raw_message for part in parts],
-                "seatalk_media_errors": media_errors,
-            },
+            raw_message=raw_message,
             message_id=parts[-1].message_id,
             media_urls=media_urls,
             media_types=media_types,
@@ -641,14 +677,37 @@ def _detect_mime_from_buffer(raw: bytes) -> str | None:
         return "image/jpeg"
     if raw[:6] in {b"GIF87a", b"GIF89a"}:
         return "image/gif"
-    if raw[:4] == b"RIFF" and raw[8:12] == b"WEBP":
-        return "image/webp"
+    if len(raw) >= 12 and raw[:4] == b"RIFF":
+        riff_form = raw[8:12]
+        if riff_form == b"WEBP":
+            return "image/webp"
+        if riff_form == b"WAVE":
+            return "audio/wav"
+        if riff_form == b"AVI ":
+            return "video/x-msvideo"
     if raw[:4] == b"%PDF":
         return "application/pdf"
     if raw[:4] in {b"PK\x03\x04", b"PK\x05\x06", b"PK\x07\x08"}:
         return "application/zip"
+    if raw[:6] == b"7z\xbc\xaf\x27\x1c":
+        return "application/x-7z-compressed"
+    if raw[:4] == b"Rar!":
+        return "application/vnd.rar"
+    if raw[:2] == b"BM":
+        return "image/bmp"
+    if raw[:4] in {b"II*\x00", b"MM\x00*"}:
+        return "image/tiff"
     if len(raw) >= 12 and raw[4:8] == b"ftyp":
+        brand = raw[8:12]
+        if brand in {b"heic", b"heix", b"hevc", b"hevx", b"mif1", b"msf1", b"heim", b"heis"}:
+            return "image/heic"
+        if brand == b"qt  ":
+            return "video/quicktime"
         return "video/mp4"
+    if raw[:3] == b"ID3":
+        return "audio/mpeg"
+    if len(raw) >= 2 and raw[0] == 0xff and (raw[1] & 0xe0) == 0xe0:
+        return "audio/mpeg"
     return None
 
 
