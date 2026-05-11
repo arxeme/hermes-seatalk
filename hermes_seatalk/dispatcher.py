@@ -503,13 +503,16 @@ class SeaTalkEventDispatcher:
             await self._flush_key(key)
         except asyncio.CancelledError:
             return
+        except Exception:
+            logger.exception("SeaTalk debounce flush failed: key=%s", key)
 
     async def _flush_key(self, key: str) -> None:
         buffer = self._buffers.pop(key, None)
         if buffer is None:
             return
+        current_task = asyncio.current_task()
         for task in (buffer.idle_task, buffer.hard_task):
-            if task is not None:
+            if task is not None and task is not current_task:
                 task.cancel()
         await self._emit_parts(buffer.parts)
 
