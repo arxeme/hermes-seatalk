@@ -162,7 +162,10 @@ async def test_t2_07_09_send_typing_and_media_use_target_runtime(tmp_path: Path)
 
     await seatalk.send("staging:EmpABC", "text")
     await seatalk.send_typing("staging:EmpABC")
-    await seatalk.send_image("staging:EmpABC", "https://example.com/photo.png")
+    # SeaTalk-hosted URL exercises the authenticated client.download_media path
+    # (Fix-8 ([adapter.py:_fetch_outbound_media_bytes]) routes non-SeaTalk URLs
+    # through unauthenticated aiohttp instead).
+    await seatalk.send_image("staging:EmpABC", "https://openapi.seatalk.io/media/photo.png")
     await seatalk.send_image_file("staging:EmpABC", str(image))
     await seatalk.send_document("staging:group/GroupABC", str(document))
 

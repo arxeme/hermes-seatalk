@@ -12,6 +12,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
+import aiohttp
+
 try:
     from gateway.config import Platform
     from gateway.platforms.base import BasePlatformAdapter, SendResult
@@ -674,7 +676,7 @@ class SeaTalkAdapter(BasePlatformAdapter):
         try:
             target = await self._resolve_target(chat_id, metadata)
             runtime = self._runtime_for_target(target)
-            data, _content_type = await runtime.client.download_media(image_url)
+            data = await _fetch_outbound_media_bytes(runtime.client, image_url)
             filename = Path(urlsplit(image_url).path).name or "image"
             media = prepare_outbound_media_bytes(data, filename)
             return await self._send_media_message_to_target(
@@ -895,8 +897,39 @@ class SeaTalkAdapter(BasePlatformAdapter):
             )
             if not caption_result.success:
                 return caption_result
-        response = await self._send_message_payload_for_client(runtime.client, target.chat_id, message, target.thread_id)
-        return SendResult(success=True, message_id=_message_id(response), raw_response=response)
+        try:
+            response = await self._send_message_payload_for_client(
+                runtime.client, target.chat_id, message, target.thread_id,
+            )
+            return SendResult(success=True, message_id=_message_id(response), raw_response=response)
+        except Exception as exc:  # noqa: BLE001
+            # Match openclaw outbound.ts:69-76 — on media send failure, fall back to
+            # a markdown text notice (format=2) so the user gets some reply rather
+            # than silent loss.
+            fallback_text = f"[Media send failed: {exc}]"
+            try:
+                fallback_response = await self._send_message_payload_for_client(
+                    runtime.client,
+                    target.chat_id,
+                    build_text_message(fallback_text, fmt=2),
+                    target.thread_id,
+                )
+            except Exception as fallback_exc:  # noqa: BLE001
+                logger.warning(
+                    "SeaTalk media send + fallback both failed: media=%s fallback=%s",
+                    exc,
+                    fallback_exc,
+                )
+                return SendResult(
+                    success=False,
+                    error=f"{exc} (fallback failed: {fallback_exc})",
+                    retryable=isinstance(exc, SeaTalkError),
+                )
+            return SendResult(
+                success=True,
+                message_id=_message_id(fallback_response),
+                raw_response={"fallback_text": fallback_text, "raw": fallback_response},
+            )
 
     async def _send_text_now_for_client(
         self,
@@ -1464,6 +1497,40 @@ def _make_home_channel(home_channel_cls: Any, *, platform: Any, chat_id: str, na
 
 def _platform_value(platform: Any) -> str:
     return str(getattr(platform, "value", platform)).lower()
+
+
+_OUTBOUND_FETCH_TIMEOUT_SECONDS = 30
+
+
+def _is_seatalk_hosted_url(url: str) -> bool:
+    """Match openclaw fetchRemoteMedia behavior: only SeaTalk-hosted URLs use the
+    authenticated download_media path; other URLs are fetched without Bearer."""
+    try:
+        host = (urlsplit(url).hostname or "").lower()
+    except Exception:  # noqa: BLE001
+        return False
+    return host == "openapi.seatalk.io" or host.endswith(".seatalk.io")
+
+
+async def _fetch_outbound_media_bytes(client: Any, url: str) -> bytes:
+    """Fetch bytes for an outbound media URL.
+
+    SeaTalk-hosted URLs go through the authenticated client (Bearer token);
+    other URLs are fetched without Authorization, matching openclaw
+    fetchRemoteMedia ([media.ts:136-151]). Local paths should not reach this
+    helper — callers use prepare_outbound_media for those.
+    """
+    if _is_seatalk_hosted_url(url):
+        data, _content_type = await client.download_media(url)
+        return data
+    timeout = aiohttp.ClientTimeout(total=_OUTBOUND_FETCH_TIMEOUT_SECONDS)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        async with session.get(url) as response:
+            if response.status < 200 or response.status >= 300:
+                raise ValueError(
+                    f"Failed to fetch media from {url}: HTTP {response.status}"
+                )
+            return await response.read()
 
 
 def register(ctx: Any) -> None:

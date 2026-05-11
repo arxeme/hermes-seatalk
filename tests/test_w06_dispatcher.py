@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from hermes_seatalk.dispatcher import SeaTalkEventDispatcher
@@ -170,6 +172,35 @@ async def test_t06_05_quoted_message(monkeypatch):
     assert event.reply_to_message_id == "quoted-1"
     assert event.reply_to_text == "[Quoted from QuotedEmp (quoted@example.com): quoted text]"
     assert event.text == "[Quoted from QuotedEmp (quoted@example.com): quoted text]\nreply"
+
+
+@pytest.mark.asyncio
+async def test_t06_05b_debounced_quoted_message_flushes(monkeypatch):
+    client = FakeClient()
+    client.quoted["quoted-1"] = {
+        "tag": "text",
+        "text": {"plain_text": "quoted text"},
+        "sender": {"employee_code": "QuotedEmp"},
+    }
+    fake_adapter = FakeAdapter()
+    payload = _dm_payload(event_id="event-1", text="reply")
+    payload["event"]["message"]["quoted_message_id"] = "quoted-1"
+
+    dispatcher = SeaTalkEventDispatcher(
+        adapter=fake_adapter,
+        client=client,
+        app_id="app-id",
+        dm_policy="open",
+        debounce_idle_seconds=0.01,
+        debounce_max_seconds=1,
+    )
+    await dispatcher.dispatch(payload, "webhook")
+    await asyncio.sleep(0.05)
+
+    assert len(fake_adapter.events) == 1
+    event = fake_adapter.events[0]
+    assert event.reply_to_text == "[Quoted from QuotedEmp: quoted text]"
+    assert event.text == "[Quoted from QuotedEmp: quoted text]\nreply"
 
 
 @pytest.mark.asyncio
@@ -643,12 +674,16 @@ async def test_t06_21_file_fallback_extension_when_no_filename():
     )
 
 
-# ── Fix 5: default allowlist allows any HTTPS host ────────────────────────────
+# ── Default allowlist matches openclaw (openapi.seatalk.io only) ──────────────
 
 
 @pytest.mark.asyncio
-async def test_t06_22_cdn_url_allowed_when_allowlist_empty():
-    """Default (empty) allowlist allows download from any HTTPS host, e.g. SeaTalk CDN."""
+async def test_t06_22_default_allowlist_matches_openclaw():
+    """Default allowlist is {openapi.seatalk.io}, matching openclaw media.ts:19.
+
+    URLs from other hosts are blocked unless media_allow_hosts is explicitly
+    configured to include them.
+    """
     client = FakeClient()
     pdf_bytes = b"%PDF-1.4 cdn content"
 
@@ -659,22 +694,37 @@ async def test_t06_22_cdn_url_allowed_when_allowlist_empty():
     client.download_error = None
 
     fake_adapter = FakeAdapter()
-    payload = _dm_payload(event_id="event-1", text="")
-    payload["event"]["message"] = {
+
+    # CDN host is NOT in the default allowlist → blocked.
+    cdn_payload = _dm_payload(event_id="ev-cdn", text="")
+    cdn_payload["event"]["message"] = {
         "message_id": "msg-cdn",
         "tag": "file",
         "file": {
-            # CDN domain — NOT in the old hard-coded openapi.seatalk.io allowlist
             "content": "https://media-cdn.seatalk.io/files/report.pdf",
             "filename": "report.pdf",
         },
     }
+    await _dispatcher(fake_adapter, client).dispatch(cdn_payload, "webhook")
+    blocked_event = fake_adapter.events[-1]
+    assert blocked_event.media_urls == [], "non-default host must be blocked under default allowlist"
+    assert any(
+        "not allowed" in e for e in blocked_event.raw_message["seatalk_media_errors"]
+    )
 
-    await _dispatcher(fake_adapter, client).dispatch(payload, "webhook")
-
-    event = fake_adapter.events[0]
-    assert event.media_urls != [], "CDN URL must be downloadable when allowlist is not configured"
-    assert event.raw_message["seatalk_media_errors"] == []
+    # openapi.seatalk.io IS in the default allowlist → allowed.
+    api_payload = _dm_payload(event_id="ev-api", text="")
+    api_payload["event"]["message"] = {
+        "message_id": "msg-api",
+        "tag": "file",
+        "file": {
+            "content": "https://openapi.seatalk.io/files/report.pdf",
+            "filename": "report.pdf",
+        },
+    }
+    await _dispatcher(fake_adapter, client).dispatch(api_payload, "webhook")
+    allowed_event = fake_adapter.events[-1]
+    assert allowed_event.media_urls != [], "openapi.seatalk.io must be allowed under default allowlist"
 
 
 @pytest.mark.asyncio
@@ -703,3 +753,258 @@ async def test_t06_23_explicit_allowlist_blocks_unlisted_host():
     assert event.media_urls == [], "non-allowlisted host must be blocked when allowlist is configured"
     errors = event.raw_message["seatalk_media_errors"]
     assert any("not allowed" in e for e in errors)
+
+
+# ── Fix-1: multi-part body join must not interleave media placeholders ───────
+
+
+@pytest.mark.asyncio
+async def test_t06_24_multipart_image_then_text_drops_placeholder():
+    """When a debounce burst contains image + text parts, the text-only body
+    must NOT include the per-image placeholder. Matches openclaw bot.ts:294-326,
+    where image/file/video parts only push to mediaList, not textParts."""
+    client = FakeClient()
+
+    async def _download(_url):
+        return PNG_BYTES, "image/png"
+
+    client.download_media = _download
+    client.download_error = None
+
+    fake_adapter = FakeAdapter()
+    dispatcher = SeaTalkEventDispatcher(
+        adapter=fake_adapter,
+        client=client,
+        app_id="app-id",
+        dm_policy="open",
+        debounce_idle_seconds=60,
+        debounce_max_seconds=60,
+    )
+
+    image_payload = _dm_payload(event_id="ev-img", text="")
+    image_payload["event"]["message"] = {
+        "message_id": "msg-img",
+        "tag": "image",
+        "image": {"content": "https://openapi.seatalk.io/media/img-1"},
+    }
+    text_payload = _dm_payload(event_id="ev-text", text="hello")
+
+    await dispatcher.dispatch(image_payload, "webhook")
+    await dispatcher.dispatch(text_payload, "webhook")
+    await dispatcher.flush_all()
+
+    event = fake_adapter.events[0]
+    assert event.text == "hello", f"placeholder must not leak into text: {event.text!r}"
+    assert event.media_urls != []
+
+
+@pytest.mark.asyncio
+async def test_t06_25_only_media_falls_back_to_placeholder():
+    """When all parts are media, the joined text falls back to placeholders
+    joined with ' ' (matching openclaw bot.ts:354)."""
+    client = FakeClient()
+
+    async def _download(_url):
+        return PNG_BYTES, "image/png"
+
+    client.download_media = _download
+    client.download_error = None
+
+    fake_adapter = FakeAdapter()
+    dispatcher = SeaTalkEventDispatcher(
+        adapter=fake_adapter,
+        client=client,
+        app_id="app-id",
+        dm_policy="open",
+        debounce_idle_seconds=60,
+        debounce_max_seconds=60,
+    )
+
+    p1 = _dm_payload(event_id="ev-img1", text="")
+    p1["event"]["message"] = {
+        "message_id": "msg-img1",
+        "tag": "image",
+        "image": {"content": "https://openapi.seatalk.io/media/img-1"},
+    }
+    p2 = _dm_payload(event_id="ev-img2", text="")
+    p2["event"]["message"] = {
+        "message_id": "msg-img2",
+        "tag": "image",
+        "image": {"content": "https://openapi.seatalk.io/media/img-2"},
+    }
+
+    await dispatcher.dispatch(p1, "webhook")
+    await dispatcher.dispatch(p2, "webhook")
+    await dispatcher.flush_all()
+
+    event = fake_adapter.events[0]
+    # Two image parts, no text → " "-joined placeholders.
+    assert event.text == "<media:image> <media:image>", (
+        f"placeholder fallback must use ' ' joiner: {event.text!r}"
+    )
+    assert len(event.media_urls) == 2
+
+
+# ── Fix-2: group quoted resolution is limited to first part ──────────────────
+
+
+@pytest.mark.asyncio
+async def test_t06_26_group_quote_only_first_part(monkeypatch):
+    """In a group debounce burst, only the first part's quoted_message_id is
+    resolved. DM-style 'resolve all unique quotes' is reserved for DMs to match
+    openclaw's asymmetric bot.ts:328-344 (DM) vs bot.ts:673 (group)."""
+    client = FakeClient()
+    client.quoted["q1"] = {
+        "tag": "text",
+        "text": {"plain_text": "quote one"},
+        "sender": {"employee_code": "S1"},
+    }
+    client.quoted["q2"] = {
+        "tag": "text",
+        "text": {"plain_text": "quote two"},
+        "sender": {"employee_code": "S2"},
+    }
+
+    fake_adapter = FakeAdapter()
+    dispatcher = SeaTalkEventDispatcher(
+        adapter=fake_adapter,
+        client=client,
+        app_id="app-id",
+        dm_policy="open",
+        group_policy="open",
+        debounce_idle_seconds=60,
+        debounce_max_seconds=60,
+    )
+
+    p1 = _group_payload(event_id="ev-1", text="reply1")
+    p1["event"]["message"]["quoted_message_id"] = "q1"
+    p2 = _group_payload(event_id="ev-2", text="reply2")
+    p2["event"]["message"]["quoted_message_id"] = "q2"
+
+    await dispatcher.dispatch(p1, "webhook")
+    await dispatcher.dispatch(p2, "webhook")
+    await dispatcher.flush_all()
+
+    event = fake_adapter.events[0]
+    assert "[Quoted from S1: quote one]" in event.text
+    assert "[Quoted from S2: quote two]" not in event.text, (
+        "group must only resolve the first part's quoted_message_id (openclaw parity)"
+    )
+    assert event.reply_to_message_id == "q1"
+
+
+@pytest.mark.asyncio
+async def test_t06_27_dm_quote_resolves_all_parts():
+    """DM keeps 'resolve all unique quoted_message_ids' (openclaw bot.ts:328-344)."""
+    client = FakeClient()
+    client.quoted["q1"] = {
+        "tag": "text",
+        "text": {"plain_text": "first quote"},
+        "sender": {"employee_code": "S1"},
+    }
+    client.quoted["q2"] = {
+        "tag": "text",
+        "text": {"plain_text": "second quote"},
+        "sender": {"employee_code": "S2"},
+    }
+
+    fake_adapter = FakeAdapter()
+    dispatcher = SeaTalkEventDispatcher(
+        adapter=fake_adapter,
+        client=client,
+        app_id="app-id",
+        dm_policy="open",
+        debounce_idle_seconds=60,
+        debounce_max_seconds=60,
+    )
+
+    p1 = _dm_payload(event_id="ev-1", text="reply1")
+    p1["event"]["message"]["quoted_message_id"] = "q1"
+    p2 = _dm_payload(event_id="ev-2", text="reply2")
+    p2["event"]["message"]["quoted_message_id"] = "q2"
+
+    await dispatcher.dispatch(p1, "webhook")
+    await dispatcher.dispatch(p2, "webhook")
+    await dispatcher.flush_all()
+
+    event = fake_adapter.events[0]
+    assert "[Quoted from S1: first quote]" in event.text
+    assert "[Quoted from S2: second quote]" in event.text
+
+
+# ── Fix-3: was_mentioned for group messages ──────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_t06_28_was_mentioned_recorded_for_group():
+    """Group event_type=new_mentioned_message_received_from_group_chat sets
+    raw_message['seatalk_was_mentioned']=True, matching openclaw bot.ts:706-708."""
+    fake_adapter = FakeAdapter()
+    dispatcher = _dispatcher(fake_adapter)
+    await dispatcher.dispatch(_group_payload(event_id="ev-mention"), "webhook")
+
+    event = fake_adapter.events[0]
+    assert event.raw_message.get("seatalk_was_mentioned") is True
+
+
+@pytest.mark.asyncio
+async def test_t06_29_was_mentioned_false_for_thread_only():
+    """Thread events without a mention set was_mentioned=False."""
+    fake_adapter = FakeAdapter()
+    dispatcher = _dispatcher(fake_adapter)
+    payload = _group_payload(event_id="ev-thread")
+    payload["event_type"] = "new_message_received_from_thread"
+    await dispatcher.dispatch(payload, "webhook")
+
+    event = fake_adapter.events[0]
+    assert event.raw_message.get("seatalk_was_mentioned") is False
+
+
+@pytest.mark.asyncio
+async def test_t06_30_was_mentioned_absent_for_dm():
+    """DM events do not carry seatalk_was_mentioned."""
+    fake_adapter = FakeAdapter()
+    dispatcher = _dispatcher(fake_adapter)
+    await dispatcher.dispatch(_dm_payload(event_id="ev-dm"), "webhook")
+
+    event = fake_adapter.events[0]
+    assert "seatalk_was_mentioned" not in event.raw_message
+
+
+# ── Fix-10: expanded MIME magic-byte detection ───────────────────────────────
+
+
+def test_t06_31_detect_mime_extended_formats():
+    """_detect_mime_from_buffer covers HEIC/HEIF, BMP, TIFF, MOV, AVI, WAV, MP3,
+    7z, RAR — beyond the original PNG/JPEG/GIF/WEBP/PDF/ZIP/MP4 set."""
+    from hermes_seatalk.dispatcher import _detect_mime_from_buffer
+
+    # HEIC variants
+    for brand in (b"heic", b"heix", b"hevc", b"mif1", b"msf1", b"heim", b"heis"):
+        buf = b"\x00\x00\x00\x18ftyp" + brand + b"\x00" * 4
+        assert _detect_mime_from_buffer(buf) == "image/heic", f"brand={brand!r}"
+
+    # MOV (QuickTime)
+    assert _detect_mime_from_buffer(b"\x00\x00\x00\x18ftypqt  " + b"\x00" * 4) == "video/quicktime"
+
+    # BMP
+    assert _detect_mime_from_buffer(b"BM" + b"\x00" * 14) == "image/bmp"
+    # TIFF (little-endian)
+    assert _detect_mime_from_buffer(b"II*\x00" + b"\x00" * 12) == "image/tiff"
+    # TIFF (big-endian)
+    assert _detect_mime_from_buffer(b"MM\x00*" + b"\x00" * 12) == "image/tiff"
+
+    # AVI
+    assert _detect_mime_from_buffer(b"RIFF\x00\x00\x00\x00AVI " + b"\x00" * 4) == "video/x-msvideo"
+    # WAV
+    assert _detect_mime_from_buffer(b"RIFF\x00\x00\x00\x00WAVE" + b"\x00" * 4) == "audio/wav"
+
+    # MP3 (ID3 tag)
+    assert _detect_mime_from_buffer(b"ID3\x03" + b"\x00" * 12) == "audio/mpeg"
+    # MP3 (frame sync)
+    assert _detect_mime_from_buffer(b"\xff\xfb" + b"\x00" * 14) == "audio/mpeg"
+
+    # 7z
+    assert _detect_mime_from_buffer(b"7z\xbc\xaf\x27\x1c" + b"\x00" * 10) == "application/x-7z-compressed"
+    # RAR
+    assert _detect_mime_from_buffer(b"Rar!" + b"\x00" * 12) == "application/vnd.rar"
