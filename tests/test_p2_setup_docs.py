@@ -193,6 +193,70 @@ def test_t2_08_05_wizard_writes_home_channel_env_not_secrets(monkeypatch):
     assert "SEATALK_SIGNING_SECRET" not in {key for key, _value in saved_env}
 
 
+def test_t2_08_12_wizard_lowercases_account_id(monkeypatch):
+    """Wizard normalizes a mixed-case account id to lowercase to match ACCOUNT_ID_RE."""
+    extra = _run_wizard(
+        monkeypatch,
+        {},
+        prompts=[
+            "Suletta",  # mixed-case account id typed by user
+            "app-id",
+            "app-secret",
+            "signing-secret",
+            "wss://relay.example.com/ws",
+            "",
+            "",
+            "",
+            "",
+            "SeaTalk Home",
+        ],
+        choices=[0, 0, 1, 0, 0],
+    )
+
+    assert "Suletta" not in extra["accounts"], "raw mixed-case key must not be written"
+    assert "suletta" in extra["accounts"], "wizard must store lowercase account id"
+    account = extra["accounts"]["suletta"]
+    assert account["app_id"] == "app-id"
+    assert account["mode"] == "relay"
+
+
+def test_t2_08_13_wizard_rejects_invalid_account_id(monkeypatch):
+    """Account ids that don't match ACCOUNT_ID_RE after lowercasing raise a clear error."""
+    import pytest
+
+    saved = []
+    _install_setup_module(
+        monkeypatch,
+        prompts=["bad id with spaces"],  # space is not in [a-z0-9_.-]
+        choices=[0],
+        saved=saved,
+    )
+    monkeypatch.setattr(adapter, "_raw_config_file", lambda: {})
+
+    with pytest.raises(ValueError, match="must start with a lowercase letter or digit"):
+        adapter._seatalk_setup_wizard()
+
+
+def test_t2_08_14_accounts_from_extra_error_message_is_actionable():
+    """Direct yaml edit with invalid account id gets an error explaining the rule."""
+    import pytest
+
+    extra = {
+        "accounts": {
+            "Suletta": {
+                "enabled": True,
+                "app_id": "x",
+                "app_secret": "y",
+                "signing_secret": "z",
+                "mode": "relay",
+                "relay_url": "wss://example/ws",
+            }
+        }
+    }
+    with pytest.raises(ValueError, match="must start with a lowercase letter or digit"):
+        adapter._accounts_from_extra(extra)
+
+
 def test_t2_08_05b_wizard_disable_remove_does_not_write_env(monkeypatch):
     saved_env = []
     _install_setup_module(monkeypatch, ["default"], [2], [], saved_env=saved_env)

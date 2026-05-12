@@ -226,7 +226,10 @@ def _accounts_from_extra(extra: dict[str, Any]) -> dict[str, SeaTalkAccountConfi
     for account_id_raw, raw_account in accounts.items():
         account_id = str(account_id_raw).strip()
         if not ACCOUNT_ID_RE.fullmatch(account_id):
-            raise ValueError(f"Invalid SeaTalk account id: {account_id_raw!r}")
+            raise ValueError(
+                f"Invalid SeaTalk account id: {account_id_raw!r} "
+                "(must start with a lowercase letter or digit; allowed chars: a-z 0-9 . _ -)"
+            )
         if raw_account is None:
             raw_account = {}
         if not isinstance(raw_account, dict):
@@ -1141,9 +1144,15 @@ def _seatalk_setup_wizard() -> None:
 
     account_ids = sorted(str(account_id) for account_id in accounts)
     default_account_id = "default" if not account_ids else account_ids[0]
-    account_id = prompt("SeaTalk account id", default=default_account_id).strip() or default_account_id
+    account_id_raw = prompt("SeaTalk account id", default=default_account_id).strip() or default_account_id
+    account_id = account_id_raw.lower()
+    if account_id != account_id_raw:
+        print_info(f"Normalized account id to lowercase: '{account_id_raw}' → '{account_id}'")
     if not ACCOUNT_ID_RE.fullmatch(account_id):
-        raise ValueError(f"Invalid SeaTalk account id: {account_id!r}")
+        raise ValueError(
+            f"Invalid SeaTalk account id: {account_id_raw!r} "
+            "(must start with a lowercase letter or digit; allowed chars: a-z 0-9 . _ -)"
+        )
 
     action = prompt_choice(
         "SeaTalk account action",
