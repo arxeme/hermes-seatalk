@@ -226,7 +226,10 @@ def _accounts_from_extra(extra: dict[str, Any]) -> dict[str, SeaTalkAccountConfi
     for account_id_raw, raw_account in accounts.items():
         account_id = str(account_id_raw).strip()
         if not ACCOUNT_ID_RE.fullmatch(account_id):
-            raise ValueError(f"Invalid SeaTalk account id: {account_id_raw!r}")
+            raise ValueError(
+                f"Invalid SeaTalk account id: {account_id_raw!r} "
+                "(must start with a lowercase letter or digit; allowed chars: a-z 0-9 . _ -)"
+            )
         if raw_account is None:
             raw_account = {}
         if not isinstance(raw_account, dict):
@@ -1141,9 +1144,15 @@ def _seatalk_setup_wizard() -> None:
 
     account_ids = sorted(str(account_id) for account_id in accounts)
     default_account_id = "default" if not account_ids else account_ids[0]
-    account_id = prompt("SeaTalk account id", default=default_account_id).strip() or default_account_id
+    account_id_raw = prompt("SeaTalk account id", default=default_account_id).strip() or default_account_id
+    account_id = account_id_raw.lower()
+    if account_id != account_id_raw:
+        print_info(f"Normalized account id to lowercase: '{account_id_raw}' → '{account_id}'")
     if not ACCOUNT_ID_RE.fullmatch(account_id):
-        raise ValueError(f"Invalid SeaTalk account id: {account_id!r}")
+        raise ValueError(
+            f"Invalid SeaTalk account id: {account_id_raw!r} "
+            "(must start with a lowercase letter or digit; allowed chars: a-z 0-9 . _ -)"
+        )
 
     action = prompt_choice(
         "SeaTalk account action",
@@ -1378,6 +1387,9 @@ async def _run_on_gateway_loop(runner: Any, make_coro: Any) -> Any:
     return await make_coro()
 
 
+_RUNNER_LOOKUP_BACKOFF_SECONDS: tuple[float, ...] = (1.0, 2.0)
+
+
 async def _seatalk_send_to_platform(
     platform: Any,
     chat_id: str,
@@ -1394,13 +1406,31 @@ async def _seatalk_send_to_platform(
     except Exception as exc:  # noqa: BLE001
         return {"error": f"SeaTalk send unavailable: {exc}"}
 
-    runner = _gateway_runner_ref()
-    if not runner:
-        return {"error": "No gateway runner. Is the gateway running?"}
+    # Brief retry: cron auto-delivery can fire during the few-second window
+    # where systemd has restarted hermes-gateway but the runner/adapter isn't
+    # yet attached. Retry only the lookup; once we have an adapter, real send
+    # errors propagate as before so we don't risk double-sends.
+    runner = None
+    runtime_adapter = None
+    last_reason = "No gateway runner"
+    for attempt in range(len(_RUNNER_LOOKUP_BACKOFF_SECONDS) + 1):
+        runner = _gateway_runner_ref()
+        if runner is not None:
+            runtime_adapter = runner.adapters.get(platform)
+            if runtime_adapter is not None:
+                break
+            last_reason = "No live SeaTalk adapter"
+        if attempt < len(_RUNNER_LOOKUP_BACKOFF_SECONDS):
+            await asyncio.sleep(_RUNNER_LOOKUP_BACKOFF_SECONDS[attempt])
 
-    runtime_adapter = runner.adapters.get(platform)
     if runtime_adapter is None:
-        return {"error": "No live SeaTalk adapter. Is the gateway running with SeaTalk connected?"}
+        attempts = len(_RUNNER_LOOKUP_BACKOFF_SECONDS) + 1
+        return {
+            "error": (
+                f"{last_reason} after {attempts} attempt(s). "
+                "Is the gateway running with SeaTalk connected?"
+            )
+        }
 
     metadata: dict[str, Any] = {"_skip_coalescing": True}
     if thread_id:
