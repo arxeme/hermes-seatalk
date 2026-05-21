@@ -207,7 +207,7 @@ def test_t01_11_seatalk_tool_registered(monkeypatch):
 
     assert len(ctx.tools) == 1
     tool = ctx.tools[0]
-    assert tool["name"] == "seatalk"
+    assert tool["name"] == "seatalk_query"
     assert tool["toolset"] == "seatalk-platform"
     assert tool["is_async"] is True
     assert callable(tool["handler"])

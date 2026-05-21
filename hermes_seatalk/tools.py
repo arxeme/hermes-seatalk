@@ -9,9 +9,11 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 SEATALK_TOOL_SCHEMA: dict[str, Any] = {
-    "name": "seatalk",
+    "name": "seatalk_query",
     "description": (
-        "SeaTalk operations. Actions: group_history (group chat messages, chronological order), "
+        "SeaTalk read-only lookups (history/info/list). NOT for sending messages — "
+        "use send_message(target=\"seatalk:<chat>\") for outbound delivery. "
+        "Actions: group_history (group chat messages, chronological order), "
         "group_info (group details), group_list (joined groups), "
         "thread_history (thread messages, chronological order), "
         "get_message (retrieve a single message by ID). "
@@ -200,7 +202,7 @@ def register_seatalk_tool(ctx: Any) -> None:
         logger.debug("seatalk tool: ctx has no register_tool, skipping")
         return
     ctx.register_tool(
-        name="seatalk",
+        name="seatalk_query",
         toolset="seatalk-platform",
         schema=SEATALK_TOOL_SCHEMA,
         handler=make_seatalk_tool_handler(),

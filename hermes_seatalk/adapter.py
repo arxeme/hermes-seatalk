@@ -1387,6 +1387,9 @@ async def _run_on_gateway_loop(runner: Any, make_coro: Any) -> Any:
     return await make_coro()
 
 
+_RUNNER_LOOKUP_BACKOFF_SECONDS: tuple[float, ...] = (1.0, 2.0)
+
+
 async def _seatalk_send_to_platform(
     platform: Any,
     chat_id: str,
@@ -1403,13 +1406,31 @@ async def _seatalk_send_to_platform(
     except Exception as exc:  # noqa: BLE001
         return {"error": f"SeaTalk send unavailable: {exc}"}
 
-    runner = _gateway_runner_ref()
-    if not runner:
-        return {"error": "No gateway runner. Is the gateway running?"}
+    # Brief retry: cron auto-delivery can fire during the few-second window
+    # where systemd has restarted hermes-gateway but the runner/adapter isn't
+    # yet attached. Retry only the lookup; once we have an adapter, real send
+    # errors propagate as before so we don't risk double-sends.
+    runner = None
+    runtime_adapter = None
+    last_reason = "No gateway runner"
+    for attempt in range(len(_RUNNER_LOOKUP_BACKOFF_SECONDS) + 1):
+        runner = _gateway_runner_ref()
+        if runner is not None:
+            runtime_adapter = runner.adapters.get(platform)
+            if runtime_adapter is not None:
+                break
+            last_reason = "No live SeaTalk adapter"
+        if attempt < len(_RUNNER_LOOKUP_BACKOFF_SECONDS):
+            await asyncio.sleep(_RUNNER_LOOKUP_BACKOFF_SECONDS[attempt])
 
-    runtime_adapter = runner.adapters.get(platform)
     if runtime_adapter is None:
-        return {"error": "No live SeaTalk adapter. Is the gateway running with SeaTalk connected?"}
+        attempts = len(_RUNNER_LOOKUP_BACKOFF_SECONDS) + 1
+        return {
+            "error": (
+                f"{last_reason} after {attempts} attempt(s). "
+                "Is the gateway running with SeaTalk connected?"
+            )
+        }
 
     metadata: dict[str, Any] = {"_skip_coalescing": True}
     if thread_id:
