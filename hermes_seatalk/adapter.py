@@ -1295,22 +1295,6 @@ def _cfg_csv(config: Any, extra_name: str, *, lower: bool = False) -> set[str]:
     return {item.strip() for item in csv.split(",") if item.strip()}
 
 
-def _patch_cron_scheduler() -> None:
-    """Add SeaTalk to cron delivery platform and home target maps."""
-    try:
-        import cron.scheduler as scheduler
-    except ImportError:
-        return
-
-    known = getattr(scheduler, "_KNOWN_DELIVERY_PLATFORMS", frozenset())
-    if SEATALK_PLATFORM not in known:
-        scheduler._KNOWN_DELIVERY_PLATFORMS = frozenset(set(known) | {SEATALK_PLATFORM})
-
-    home_envs = getattr(scheduler, "_HOME_TARGET_ENV_VARS", None)
-    if isinstance(home_envs, dict):
-        home_envs[SEATALK_PLATFORM] = "SEATALK_HOME_CHANNEL"
-
-
 def _patch_send_message_tool() -> None:
     """Inject SeaTalk target parsing into ``send_message``."""
     try:
@@ -1350,7 +1334,7 @@ def _patch_send_to_platform() -> None:
     if getattr(original, "_seatalk_patched", False):
         return
 
-    async def _patched_send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None, **kwargs):
+    async def _patched_send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None, force_document=False, **kwargs):
         if _platform_value(platform) == SEATALK_PLATFORM:
             return await _seatalk_send_to_platform(
                 platform,
@@ -1358,6 +1342,7 @@ def _patch_send_to_platform() -> None:
                 message,
                 thread_id=thread_id,
                 media_files=media_files or [],
+                force_document=force_document,
             )
         return await original(
             platform,
@@ -1366,6 +1351,7 @@ def _patch_send_to_platform() -> None:
             message,
             thread_id=thread_id,
             media_files=media_files,
+            force_document=force_document,
             **kwargs,
         )
 
@@ -1397,8 +1383,13 @@ async def _seatalk_send_to_platform(
     *,
     thread_id: str | None = None,
     media_files: list[tuple[str, bool]] | None = None,
+    force_document: bool = False,
 ) -> dict[str, Any]:
-    """SeaTalk-specific send path that preserves thread and native media."""
+    """SeaTalk-specific send path that preserves thread and native media.
+
+    When ``force_document`` is True, image-extension files are routed through
+    the document upload path so SeaTalk preserves the original quality / file
+    handling (mirrors the gateway-wide ``[[as_document]]`` skill directive)."""
     try:
         from gateway.run import _gateway_runner_ref
         from gateway.platforms.base import BasePlatformAdapter
@@ -1454,7 +1445,8 @@ async def _seatalk_send_to_platform(
 
     for media_path, _is_voice in media_files or []:
         ext = Path(media_path).suffix.lower()
-        if ext in {".jpg", ".jpeg", ".png", ".webp", ".gif"}:
+        is_image = ext in {".jpg", ".jpeg", ".png", ".webp", ".gif"}
+        if is_image and not force_document:
             result = await _run_on_gateway_loop(
                 runner,
                 lambda media_path=media_path: runtime_adapter.send_image_file(
@@ -1566,7 +1558,6 @@ async def _fetch_outbound_media_bytes(client: Any, url: str) -> bytes:
 def register(ctx: Any) -> None:
     """Plugin entry point called by the Hermes plugin loader."""
     os.environ[INTERNAL_ALLOW_ALL_ENV] = "true"
-    _patch_cron_scheduler()
     _patch_send_message_tool()
     _patch_send_to_platform()
     _patch_home_channel()
@@ -1587,6 +1578,7 @@ def register(ctx: Any) -> None:
         max_message_length=4000,
         emoji="💬",
         platform_hint=_SEATALK_PLATFORM_HINT,
+        cron_deliver_env_var="SEATALK_HOME_CHANNEL",
     )
     register_seatalk_tool(ctx)
     setattr(ctx, "_seatalk_platform_registered", True)

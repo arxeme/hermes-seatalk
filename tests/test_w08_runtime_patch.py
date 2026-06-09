@@ -260,6 +260,63 @@ async def test_t08_11_send_to_platform_accepts_force_document(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_t08_11b_force_document_routes_images_via_send_document(monkeypatch, tmp_path):
+    """force_document=True must override image-extension routing so SeaTalk
+    receives the file via send_document (preserves quality / file name)."""
+    import gateway.run as gateway_run
+
+    platform = _register_platform_entry()
+    runtime_adapter = FakeRuntimeAdapter()
+    monkeypatch.setattr(
+        gateway_run,
+        "_gateway_runner_ref",
+        lambda: SimpleNamespace(adapters={platform: runtime_adapter}),
+    )
+    image = tmp_path / "photo.png"
+    image.write_bytes(b"image")
+
+    result = await seatalk_adapter._seatalk_send_to_platform(
+        platform,
+        "group/GroupABC",
+        "",
+        media_files=[(str(image), False)],
+        force_document=True,
+    )
+
+    assert result["success"] is True
+    assert len(runtime_adapter.calls) == 1
+    assert runtime_adapter.calls[0][0] == "document", (
+        f"force_document must override image routing; got {runtime_adapter.calls[0][0]}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_t08_11c_default_still_routes_images_via_send_image_file(monkeypatch, tmp_path):
+    """Sanity: without force_document, image-extension files still go through
+    send_image_file (we did not regress the default behavior)."""
+    import gateway.run as gateway_run
+
+    platform = _register_platform_entry()
+    runtime_adapter = FakeRuntimeAdapter()
+    monkeypatch.setattr(
+        gateway_run,
+        "_gateway_runner_ref",
+        lambda: SimpleNamespace(adapters={platform: runtime_adapter}),
+    )
+    image = tmp_path / "photo.png"
+    image.write_bytes(b"image")
+
+    await seatalk_adapter._seatalk_send_to_platform(
+        platform,
+        "group/GroupABC",
+        "",
+        media_files=[(str(image), False)],
+    )
+
+    assert runtime_adapter.calls[0][0] == "image"
+
+
+@pytest.mark.asyncio
 async def test_t08_12_send_to_platform_uses_gateway_loop(monkeypatch):
     import gateway.run as gateway_run
 
@@ -301,15 +358,23 @@ async def test_t08_12_send_to_platform_uses_gateway_loop(monkeypatch):
 
 
 def test_t08_05_cron_target(monkeypatch):
+    """SeaTalk's cron_deliver_env_var declaration lets the cron scheduler
+    resolve seatalk targets without monkey-patching scheduler internals."""
     import cron.scheduler as scheduler
 
     monkeypatch.setattr(scheduler, "_KNOWN_DELIVERY_PLATFORMS", frozenset({"telegram"}))
     monkeypatch.setattr(scheduler, "_HOME_TARGET_ENV_VARS", {"telegram": "TELEGRAM_HOME_CHANNEL"})
     monkeypatch.setenv("SEATALK_HOME_CHANNEL", "group/Home")
 
-    seatalk_adapter._patch_cron_scheduler()
+    platform_registry.register(PlatformEntry(
+        name="seatalk",
+        label="SeaTalk",
+        adapter_factory=lambda cfg: seatalk_adapter.SeaTalkAdapter(cfg),
+        check_fn=lambda: True,
+        cron_deliver_env_var="SEATALK_HOME_CHANNEL",
+    ))
 
-    assert "seatalk" in scheduler._KNOWN_DELIVERY_PLATFORMS
+    assert scheduler._is_known_delivery_platform("seatalk") is True
     assert scheduler._resolve_single_delivery_target({}, "seatalk") == {
         "platform": "seatalk",
         "chat_id": "group/Home",

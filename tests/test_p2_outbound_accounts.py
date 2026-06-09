@@ -196,13 +196,22 @@ async def test_t2_07_10_home_channel_env_account_target(monkeypatch):
 
 
 def test_t2_07_11_cron_account_target(monkeypatch):
+    """Account-qualified home channels resolve via the declarative
+    cron_deliver_env_var path (no scheduler monkey-patching needed)."""
     scheduler = pytest.importorskip("cron.scheduler")
+    from gateway.platform_registry import PlatformEntry, platform_registry
 
     monkeypatch.setattr(scheduler, "_KNOWN_DELIVERY_PLATFORMS", frozenset({"telegram"}))
     monkeypatch.setattr(scheduler, "_HOME_TARGET_ENV_VARS", {"telegram": "TELEGRAM_HOME_CHANNEL"})
     monkeypatch.setenv("SEATALK_HOME_CHANNEL", "staging:group/Home")
 
-    adapter._patch_cron_scheduler()
+    platform_registry.register(PlatformEntry(
+        name="seatalk",
+        label="SeaTalk",
+        adapter_factory=lambda cfg: adapter.SeaTalkAdapter(cfg),
+        check_fn=lambda: True,
+        cron_deliver_env_var="SEATALK_HOME_CHANNEL",
+    ))
 
     assert scheduler._resolve_single_delivery_target({}, "seatalk") == {
         "platform": "seatalk",
