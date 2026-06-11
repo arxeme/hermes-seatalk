@@ -251,7 +251,16 @@ class SeaTalkOpenAPIClient:
 
         if code == 101:
             if rate_limit_attempt < len(self.rate_limit_retry_delays):
-                await self._sleep(self.rate_limit_retry_delays[rate_limit_attempt])
+                delay = self.rate_limit_retry_delays[rate_limit_attempt]
+                logger.warning(
+                    "SeaTalk API rate limited (code=101) on %s %s; retrying in %.0fs (attempt %d/%d)",
+                    method,
+                    path,
+                    delay,
+                    rate_limit_attempt + 1,
+                    len(self.rate_limit_retry_delays),
+                )
+                await self._sleep(delay)
                 return await self.api_call(
                     method,
                     path,
