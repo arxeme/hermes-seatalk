@@ -108,18 +108,42 @@ def _get_seatalk_tool_client(account_id: str | None = None) -> Any | None:
     if not runner:
         return None
 
-    try:
-        from hermes_seatalk.adapter import SeaTalkAdapter
-    except ImportError:
-        return None
-
+    # The plugin can be imported under different package roots (`hermes_seatalk` in tests,
+    # `hermes_plugins.<plugin>.hermes_seatalk` when loaded by the gateway), so an isinstance
+    # check against a freshly imported class fails on the other module instance. Match the
+    # adapter by class name and shape instead.
     for adapter_instance in runner.adapters.values():
-        if isinstance(adapter_instance, SeaTalkAdapter):
-            key = account_id if account_id else adapter_instance._default_account_id
-            runtime = adapter_instance._runtimes.get(key)
-            if runtime:
-                return runtime.client
+        if type(adapter_instance).__name__ != "SeaTalkAdapter":
+            continue
+        runtimes = getattr(adapter_instance, "_runtimes", None)
+        if runtimes is None:
+            continue
+        key = account_id if account_id else getattr(adapter_instance, "_default_account_id", None)
+        runtime = runtimes.get(key)
+        if runtime:
+            return _loop_local_client(runtime.client)
     return None
+
+
+def _loop_local_client(src: Any) -> Any:
+    """Build a fresh client with the source client's credentials.
+
+    The runtime client's aiohttp session is bound to the gateway's event loop, while the
+    tool handler runs in the agent's loop - reusing it raises "Timeout context manager
+    should be used inside a task". A fresh client creates its session lazily inside the
+    handler's own loop. The handler closes clients flagged as tool-owned.
+    """
+    try:
+        client = type(src)(
+            src.app_id,
+            src.app_secret,
+            base_url=src.base_url,
+            log_secrets=list(getattr(src, "_log_secrets", []) or []),
+        )
+    except Exception:  # noqa: BLE001 - fall back to the shared instance
+        return src
+    client._seatalk_tool_owned = True
+    return client
 
 
 def make_seatalk_tool_handler(get_client: Any = None) -> Any:
@@ -192,6 +216,12 @@ def make_seatalk_tool_handler(get_client: Any = None) -> Any:
 
         except Exception as exc:  # noqa: BLE001
             return json.dumps({"error": str(exc)})
+        finally:
+            if getattr(client, "_seatalk_tool_owned", False):
+                try:
+                    await client.close()
+                except Exception:  # noqa: BLE001
+                    pass
 
     return handler
 
