@@ -37,6 +37,32 @@ ERROR tools.vision_tools: Error analyzing image: No LLM provider configured for 
 
 ## 应用方法
 
+### 一行远程安装（推荐）
+
+以 hermes 用户在目标机器上执行（自动定位 venv python、打补丁、语法校验、重启 gateway）：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/arxeme/hermes-seatalk/main/deploy/patches/hotfix-vision-runtime-credentials/install.sh \
+  | bash -s -- --hermes-root ~/.hermes/hermes-agent
+```
+
+> **注意**：本补丁只存在于 `main` 分支（仓库默认分支是 `publish`），URL 中的
+> `main` 不能省略或改成默认分支。
+
+常用变体：
+
+```bash
+# 只打补丁不重启 gateway
+curl -fsSL .../install.sh | bash -s -- --hermes-root ~/.hermes/hermes-agent --no-restart
+
+# 回滚（从备份恢复并重启）
+curl -fsSL .../install.sh | bash -s -- --hermes-root ~/.hermes/hermes-agent --restore
+```
+
+幂等：重复执行输出 `ALREADY_PATCHED`，不会重复修改。
+
+### 手动应用
+
 以 hermes 用户在目标 VM 上执行（首次应用自动备份；重复执行为 no-op）：
 
 ```bash
@@ -67,8 +93,8 @@ from hermes_cli.env_loader import load_hermes_dotenv
 load_hermes_dotenv(hermes_home=os.path.expanduser("~/.hermes"))
 from agent.auxiliary_client import resolve_vision_provider_client, set_runtime_main
 set_runtime_main("custom", "claude-opus-4-7",
-                 base_url="https://new-api.openclaw.ingarena.net",
-                 api_key=os.environ.get("GARENA_GATEWAY_API_KEY", ""),
+                 base_url="https://<your-gateway>",
+                 api_key=os.environ.get("<YOUR_KEY_ENV>", ""),
                  api_mode="anthropic_messages")
 prov, client, model = resolve_vision_provider_client(provider="auto")
 print("client:", type(client).__name__ if client else None)  # 期望 AnthropicAuxiliaryClient
@@ -89,4 +115,5 @@ systemctl --user restart hermes-gateway
 
 | 日期 | 目标 | 操作人 | 备注 |
 |---|---|---|---|
-| 2026-06-09 | `vm-ba5380155105e10b`（10.197.0.210，hermes 用户） | Claude（会话内 hotfix） | 已验证 gateway 重启后 SeaTalk + Discord 正常连接 |
+| 2026-06-09 | debug VM（hermes 用户） | Claude（会话内 hotfix，早期注释变体） | 已验证 gateway 重启后 SeaTalk + Discord 正常连接 |
+| 2026-06-11 | debug VM（hermes 用户） | Claude | 回滚旧变体后改用本目录 apply.py 重新应用，待完整测试 |
