@@ -39,7 +39,8 @@ ERROR tools.vision_tools: Error analyzing image: No LLM provider configured for 
 
 ### 一行远程安装（推荐）
 
-以 hermes 用户在目标机器上执行（自动定位 venv python、打补丁、语法校验、重启 gateway）：
+以 hermes 用户在目标机器上执行（自动定位 venv python、打补丁、语法校验）。
+**默认不重启 gateway**——便于嵌入全新安装/升级流程中间执行，全流程结束后再统一重启：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/arxeme/hermes-seatalk/main/deploy/patches/hotfix-vision-runtime-credentials/install.sh \
@@ -52,11 +53,11 @@ curl -fsSL https://raw.githubusercontent.com/arxeme/hermes-seatalk/main/deploy/p
 常用变体：
 
 ```bash
-# 只打补丁不重启 gateway
-curl -fsSL .../install.sh | bash -s -- --hermes-root ~/.hermes/hermes-agent --no-restart
+# 打补丁后立即重启 gateway（单独应用本补丁时使用）
+curl -fsSL .../install.sh | bash -s -- --hermes-root ~/.hermes/hermes-agent --restart
 
-# 回滚（从备份恢复并重启）
-curl -fsSL .../install.sh | bash -s -- --hermes-root ~/.hermes/hermes-agent --restore
+# 回滚（从备份恢复；同样默认不重启，加 --restart 立即重启）
+curl -fsSL .../install.sh | bash -s -- --hermes-root ~/.hermes/hermes-agent --restore --restart
 ```
 
 幂等：重复执行输出 `ALREADY_PATCHED`，不会重复修改。

@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 # One-line installer for the hermes-agent vision runtime-credentials hotfix.
 #
+# Does NOT restart the gateway by default (so it can run mid-flow during a
+# fresh install / upgrade pipeline). Pass --restart to restart afterwards,
+# or restart yourself when the whole flow is done:
+#   systemctl --user restart hermes-gateway
+#
 # Remote (note: the patch lives on the `main` branch, NOT the default `publish`):
 #   curl -fsSL https://raw.githubusercontent.com/arxeme/hermes-seatalk/main/deploy/patches/hotfix-vision-runtime-credentials/install.sh \
 #     | bash -s -- --hermes-root ~/.hermes/hermes-agent
@@ -26,7 +31,7 @@ PATCH_REF="${HERMES_SEATALK_PATCH_REF:-main}"
 PATCH_DIR_IN_REPO="deploy/patches/hotfix-vision-runtime-credentials"
 BACKUP_SUFFIX=".bak.hotfix-vision-runtime-credentials"
 RESTORE=0
-NO_RESTART=0
+RESTART=0
 APPLY_TMP=""
 
 cleanup() {
@@ -46,7 +51,10 @@ Options:
   --python PATH        Python interpreter to run the patcher
                        (default: <hermes-root>/venv/bin/python, fallback python3)
   --restore            Restore agent/auxiliary_client.py from the hotfix backup
-  --no-restart         Do not restart the hermes-gateway systemd user service
+  --restart            Restart the hermes-gateway systemd user service afterwards
+                       (default: no restart, so this can run mid-flow during
+                       install/upgrade pipelines)
+  --no-restart         Accepted for compatibility (no-op; no restart is the default)
   --repo OWNER/REPO    Patch repo for remote self-install (default: arxeme/hermes-seatalk)
   --ref REF            Patch repo ref (default: main — the patch is NOT on `publish`)
   -h, --help           Show this help
@@ -69,8 +77,12 @@ while [[ $# -gt 0 ]]; do
             RESTORE=1
             shift
             ;;
+        --restart)
+            RESTART=1
+            shift
+            ;;
         --no-restart)
-            NO_RESTART=1
+            # Compatibility no-op: not restarting is already the default.
             shift
             ;;
         --repo)
@@ -111,8 +123,8 @@ if [[ -z "$PYTHON_BIN" ]]; then
 fi
 
 restart_gateway() {
-    if [[ "$NO_RESTART" -eq 1 ]]; then
-        echo "Skipping gateway restart (--no-restart). Restart manually:"
+    if [[ "$RESTART" -ne 1 ]]; then
+        echo "Gateway NOT restarted (default). Restart it when your flow is done:"
         echo "  systemctl --user restart hermes-gateway"
         return
     fi
