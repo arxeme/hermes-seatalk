@@ -15,11 +15,15 @@
 set -euo pipefail
 
 # Paths included in the publish branch (no docs/, tests/, scripts/, deploy/).
+# The bundled Python SeaTalk OAPI SDK is required at runtime by websocket mode
+# (imported via the fallback path in hermes_seatalk/websocket.py), so its
+# package ships in the runtime tree too. The reference Go SDK is not shipped.
 RELEASE_PATHS=(
     plugin.yaml
     __init__.py
     adapter.py
     hermes_seatalk
+    ref/seatalk-oapi/seatalk-oapi-sdk-py/seatalk_oapi_sdk
     pyproject.toml
     requirements.txt
     env.example
