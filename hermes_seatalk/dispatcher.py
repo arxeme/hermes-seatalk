@@ -83,6 +83,10 @@ LOG_ONLY_EVENTS = {
     "new_bot_subscriber",
     "bot_added_to_group_chat",
     "bot_removed_from_group_chat",
+    # Lifecycle events delivered by the native WebSocket SDK that this plugin
+    # does not act on; log them quietly instead of as "unknown event type".
+    "user_enter_chatroom_with_bot",
+    "group_chat_converted_to_external_group",
 }
 DEFAULT_DEDUP_TTL_SECONDS = 30 * 60
 DEFAULT_DEDUP_MAX_SIZE = 1000
