@@ -4,3 +4,7 @@ __pycache__/
 .venv/
 uv.lock
 *.local
+.DS_Store
+# Bundled SeaTalk OAPI SDK: vendor only the Python SDK (used at runtime via the
+# websocket-mode fallback import); the Go SDK is reference-only.
+ref/seatalk-oapi/seatalk-oapi-sdk-go/

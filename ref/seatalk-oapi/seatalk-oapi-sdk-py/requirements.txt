@@ -1,0 +1,8 @@
+# Runtime dependencies for seatalk-oapi-sdk-py.
+#
+# This SDK is intentionally implemented with Python's standard library only,
+# so there are currently no third-party packages required at runtime.
+#
+# Keeping this file allows users and CI to run:
+#   pip install -r requirements.txt
+# without needing special-case handling.

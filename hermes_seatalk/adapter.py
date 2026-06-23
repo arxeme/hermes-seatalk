@@ -51,12 +51,14 @@ from .dispatcher import SeaTalkEventDispatcher
 from .relay import SeaTalkRelayClient
 from .targets import SeaTalkTarget, parse_seatalk_target
 from .webhook import SeaTalkWebhookAccount, SeaTalkWebhookServer
+from .websocket import DEFAULT_WEBSOCKET_URL, SeaTalkWebSocketClient
 
 
 logger = logging.getLogger(__name__)
 SEATALK_PLATFORM = "seatalk"
 SEATALK_PLUGIN_NAME = "seatalk-platform"
-VALID_MODES = {"relay", "webhook"}
+VALID_MODES = {"relay", "webhook", "websocket"}
+VALID_TEXT_FORMATS = {1, 2}
 VALID_DM_POLICIES = {"allowlist", "open"}
 VALID_GROUP_POLICIES = {"disabled", "allowlist", "open"}
 VALID_PROCESSING_INDICATORS = {"typing", "off"}
@@ -82,9 +84,11 @@ class SeaTalkAccountConfig:
     signing_secret: str
     mode: str
     relay_url: str = ""
+    ws_url: str = ""
     webhook_host: str = "0.0.0.0"
     webhook_port: int = 8080
     webhook_path: str = "/callback"
+    text_format: int = 2
     dm_policy: str = "allowlist"
     allow_from: tuple[str, ...] = ()
     group_policy: str = "disabled"
@@ -276,6 +280,12 @@ def _build_account_config(account_id: str, data: dict[str, Any]) -> SeaTalkAccou
     if mode == "relay" and not relay_url:
         raise ValueError(f"SeaTalk account {account_id} relay_url is required in relay mode")
 
+    ws_url = _text_value(data.get("ws_url")) or (DEFAULT_WEBSOCKET_URL if mode == "websocket" else "")
+
+    text_format = _coerce_text_format(data.get("text_format"))
+    if text_format is None:
+        raise ValueError(f"SeaTalk account {account_id} has invalid text_format (must be 1 or 2)")
+
     webhook_port = _coerce_webhook_port(data.get("webhook_port"))
     webhook_path = _text_value(data.get("webhook_path")) or "/callback"
     if mode == "webhook" and webhook_port is None:
@@ -295,9 +305,11 @@ def _build_account_config(account_id: str, data: dict[str, Any]) -> SeaTalkAccou
         signing_secret=signing_secret,
         mode=mode,
         relay_url=relay_url,
+        ws_url=ws_url,
         webhook_host=_text_value(data.get("webhook_host")) or "0.0.0.0",
         webhook_port=webhook_port or 8080,
         webhook_path=webhook_path,
+        text_format=text_format,
         dm_policy=dm_policy,
         allow_from=tuple(_csv_list(data.get("allow_from"))),
         group_policy=group_policy,
@@ -314,6 +326,20 @@ def _build_all_secrets(accounts: dict[str, SeaTalkAccountConfig]) -> list[str]:
     for account in accounts.values():
         values.extend([account.app_secret, account.signing_secret])
     return list(dict.fromkeys(value for value in values if value))
+
+
+def _coerce_text_format(raw: Any) -> int | None:
+    """Outbound text message format: 1 = plain text, 2 = Markdown/rich text.
+
+    Defaults to 2 so the agent's Markdown renders as rich text in SeaTalk.
+    """
+    if raw in (None, ""):
+        return 2
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return None
+    return value if value in VALID_TEXT_FORMATS else None
 
 
 def _coerce_webhook_port(raw: Any) -> int | None:
@@ -443,12 +469,13 @@ class SeaTalkAdapter(BasePlatformAdapter):
             )
 
         coalescers = OutboundCoalescerMap(
-            send_factory=lambda chat_id, thread_id, runtime_client=client: (
+            send_factory=lambda chat_id, thread_id, runtime_client=client, fmt=account_config.text_format: (
                 lambda text: self._send_text_or_raise_for_client(
                     runtime_client,
                     chat_id,
                     text,
                     thread_id,
+                    fmt,
                 )
             ),
             chunk_text=self._split_text,
@@ -526,30 +553,49 @@ class SeaTalkAdapter(BasePlatformAdapter):
     async def _connect_runtime(self, runtime: SeaTalkAccountRuntime) -> bool:
         account = runtime.config
         try:
-            runtime.relay_client = SeaTalkRelayClient(
-                relay_url=account.relay_url,
-                app_id=account.app_id,
-                app_secret=account.app_secret,
-                signing_secret=account.signing_secret,
-                dispatch=lambda event, source, account_id=account.account_id: (
-                    self._dispatch_runtime_event(account_id, event, source)
-                ),
-                reconnect_initial_seconds=_cfg_float(
-                    self.config,
-                    "relay_reconnect_initial_seconds",
-                    1.0,
-                ),
-                reconnect_max_seconds=_cfg_float(
-                    self.config,
-                    "relay_reconnect_max_seconds",
-                    30.0,
-                ),
-                heartbeat_timeout_seconds=_cfg_float(
-                    self.config,
-                    "relay_heartbeat_timeout_seconds",
-                    75.0,
-                ),
+            dispatch = lambda event, source, account_id=account.account_id: (
+                self._dispatch_runtime_event(account_id, event, source)
             )
+            if account.mode == "websocket":
+                runtime.relay_client = SeaTalkWebSocketClient(
+                    ws_url=account.ws_url,
+                    app_id=account.app_id,
+                    app_secret=account.app_secret,
+                    dispatch=dispatch,
+                    reconnect_initial_seconds=_cfg_float(
+                        self.config,
+                        "relay_reconnect_initial_seconds",
+                        1.0,
+                    ),
+                    reconnect_max_seconds=_cfg_float(
+                        self.config,
+                        "relay_reconnect_max_seconds",
+                        30.0,
+                    ),
+                )
+            else:
+                runtime.relay_client = SeaTalkRelayClient(
+                    relay_url=account.relay_url,
+                    app_id=account.app_id,
+                    app_secret=account.app_secret,
+                    signing_secret=account.signing_secret,
+                    dispatch=dispatch,
+                    reconnect_initial_seconds=_cfg_float(
+                        self.config,
+                        "relay_reconnect_initial_seconds",
+                        1.0,
+                    ),
+                    reconnect_max_seconds=_cfg_float(
+                        self.config,
+                        "relay_reconnect_max_seconds",
+                        30.0,
+                    ),
+                    heartbeat_timeout_seconds=_cfg_float(
+                        self.config,
+                        "relay_heartbeat_timeout_seconds",
+                        75.0,
+                    ),
+                )
             connected = await runtime.relay_client.start(
                 timeout=_cfg_float(self.config, "relay_connect_timeout_seconds", 5.0)
             )
@@ -648,7 +694,9 @@ class SeaTalkAdapter(BasePlatformAdapter):
             if should_coalesce:
                 runtime.coalescers.append(target.chat_id, target.thread_id, content)
                 return SendResult(success=True, raw_response={"queued": True})
-            return await self._send_text_now_for_client(runtime.client, target.chat_id, content, target.thread_id)
+            return await self._send_text_now_for_client(
+                runtime.client, target.chat_id, content, target.thread_id, runtime.config.text_format
+            )
         except Exception as exc:  # noqa: BLE001
             logger.warning("SeaTalk send failed: chat_id=%s error=%s", chat_id, exc)
             return SendResult(success=False, error=str(exc), retryable=isinstance(exc, SeaTalkError))
@@ -765,9 +813,10 @@ class SeaTalkAdapter(BasePlatformAdapter):
     async def _dispatch_runtime_event(self, account_id: str, event: dict[str, Any], source: str) -> None:
         runtime = self._runtimes[account_id]
         payload_app_id = str(event.get("app_id") or "")
-        if source == "relay" and payload_app_id and payload_app_id != runtime.config.app_id:
+        if source in ("relay", "websocket") and payload_app_id and payload_app_id != runtime.config.app_id:
             logger.warning(
-                "SeaTalk relay event dropped: account_id=%s reason=app_id_mismatch expected=%s got=%s",
+                "SeaTalk %s event dropped: account_id=%s reason=app_id_mismatch expected=%s got=%s",
+                source,
                 account_id,
                 runtime.config.app_id,
                 payload_app_id,
@@ -897,6 +946,7 @@ class SeaTalkAdapter(BasePlatformAdapter):
                 target.chat_id,
                 caption,
                 target.thread_id,
+                runtime.config.text_format,
             )
             if not caption_result.success:
                 return caption_result
@@ -940,12 +990,15 @@ class SeaTalkAdapter(BasePlatformAdapter):
         chat_id: str,
         content: str,
         thread_id: str | None,
+        fmt: int = 1,
     ) -> SendResult:
         if not content:
             return SendResult(success=True)
         last_response: dict[str, Any] | None = None
         for chunk in self._split_text(content, MAX_MESSAGE_LENGTH):
-            last_response = await self._send_message_payload_for_client(client, chat_id, build_text_message(chunk), thread_id)
+            last_response = await self._send_message_payload_for_client(
+                client, chat_id, build_text_message(chunk, fmt), thread_id
+            )
         return SendResult(
             success=True,
             message_id=_message_id(last_response),
@@ -958,11 +1011,14 @@ class SeaTalkAdapter(BasePlatformAdapter):
         chat_id: str,
         content: str,
         thread_id: str | None,
+        fmt: int = 1,
     ) -> None:
         if not content:
             return
         for chunk in self._split_text(content, MAX_MESSAGE_LENGTH):
-            await self._send_message_payload_for_client(client, chat_id, build_text_message(chunk), thread_id)
+            await self._send_message_payload_for_client(
+                client, chat_id, build_text_message(chunk, fmt), thread_id
+            )
 
     async def _send_message_payload_for_client(
         self,
@@ -1185,13 +1241,14 @@ def _seatalk_setup_wizard() -> None:
         _set_optional(account, key, value)
 
     existing_mode = str(account.get("mode") or "webhook").lower()
-    default_index = 1 if existing_mode == "webhook" else 0
+    mode_options = ["relay", "webhook", "websocket"]
+    default_index = mode_options.index(existing_mode) if existing_mode in mode_options else 1
     mode_choice = prompt_choice(
         "SeaTalk connection mode",
-        ["relay", "webhook"],
+        mode_options,
         default_index,
     )
-    mode = "webhook" if mode_choice == 1 else "relay"
+    mode = mode_options[mode_choice]
     account["mode"] = mode
 
     if mode == "relay":
@@ -1200,10 +1257,24 @@ def _seatalk_setup_wizard() -> None:
             default=str(account.get("relay_url") or ""),
         )
         _set_optional(account, "relay_url", relay_url)
-        for stale_key in ("webhook_host", "webhook_port", "webhook_path"):
+        for stale_key in ("ws_url", "webhook_host", "webhook_port", "webhook_path"):
             account.pop(stale_key, None)
+    elif mode == "websocket":
+        ws_url = prompt(
+            "SeaTalk native WebSocket URL",
+            default=str(account.get("ws_url") or DEFAULT_WEBSOCKET_URL),
+        )
+        _set_optional(account, "ws_url", ws_url)
+        for stale_key in ("relay_url", "webhook_host", "webhook_port", "webhook_path"):
+            account.pop(stale_key, None)
+        print_info(
+            "Switch this bot's Event Callback method to WebSocket in the SeaTalk "
+            "Developer Portal, then click Re-verify while the gateway is running. "
+            "A bot can use only one delivery method at a time."
+        )
     else:
         account.pop("relay_url", None)
+        account.pop("ws_url", None)
         for key, label, default in (
             ("webhook_host", "Webhook bind host", "0.0.0.0"),
             ("webhook_port", "Webhook port", "8080"),
@@ -1263,6 +1334,15 @@ def _seatalk_setup_wizard() -> None:
         processing_indicator_index,
     )
     account["processing_indicator"] = "off" if processing_indicator_choice == 1 else "typing"
+
+    text_format_existing = str(account.get("text_format") or "2").strip()
+    text_format_index = 1 if text_format_existing == "1" else 0
+    text_format_choice = prompt_choice(
+        "Outbound text format",
+        ["markdown (rich text)", "plain text"],
+        text_format_index,
+    )
+    account["text_format"] = 1 if text_format_choice == 1 else 2
 
     home_channel = prompt(
         "SeaTalk home channel target (optional)",

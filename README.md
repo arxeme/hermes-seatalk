@@ -62,7 +62,7 @@ The SeaTalk wizard asks for values in this order:
 
 1. Account id and action: add/edit, disable, or remove.
 2. App identity and secrets: `app_id`, `app_secret`, and `signing_secret`.
-3. Inbound mode: `webhook` or `relay`.
+3. Inbound mode: `webhook`, `relay`, or `websocket`.
 4. Mode-specific values.
 5. SeaTalk authorization policy.
 6. Home channel target, optional thread id, and display name.
@@ -133,8 +133,38 @@ platforms:
           relay_url: wss://relay.example.com/ws
 ```
 
-Configure the SeaTalk Bot App callback URL to point at the externally reachable
-endpoint, usually through a reverse proxy or tunnel that terminates TLS.
+WebSocket mode connects outbound directly to SeaTalk's native Event Callback
+over a persistent WebSocket using the official `seatalk_oapi_sdk` (bundled,
+pure-stdlib, no public endpoint and no relay required). `ws_url` is optional and
+defaults to `wss://ws-openapi.haiserve.com/ws/bot`:
+
+```yaml
+platforms:
+  seatalk:
+    enabled: true
+    extra:
+      accounts:
+        default:
+          enabled: true
+          app_id: your_app_id
+          app_secret: your_app_secret
+          signing_secret: your_signing_secret
+          mode: websocket
+          # ws_url: wss://ws-openapi.haiserve.com/ws/bot   # optional
+```
+
+In the SeaTalk Developer Portal, open the bot's **Event Callback** settings,
+select **WebSocket** as the delivery method, and click **Re-verify** while the
+gateway is running and connected. A bot can use only one delivery method at a
+time, so switching to WebSocket disables any webhook/relay callback URL.
+
+For webhook and relay modes, configure the SeaTalk Bot App callback URL to point
+at the externally reachable endpoint, usually through a reverse proxy or tunnel
+that terminates TLS.
+
+`text_format` controls outbound text rendering: `2` (default) sends Markdown as
+rich text (bold, italics, lists, code blocks); `1` sends plain text. This
+applies to all modes.
 
 `dm_policy` controls direct messages. With the default `allowlist`, `allow_from`
 must match the SeaTalk sender email or employee code. `open` allows all direct

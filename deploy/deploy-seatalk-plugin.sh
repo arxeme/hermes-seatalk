@@ -263,6 +263,9 @@ tar -czf "$ARCHIVE" \
     --exclude="./uv.lock" \
     --exclude="./*.local" \
     --exclude="./.env" \
+    --exclude="./ref/seatalk-oapi/.git" \
+    --exclude="./ref/seatalk-oapi/seatalk-oapi-sdk-go" \
+    --exclude="./ref/seatalk-oapi/seatalk-oapi-sdk-py/tests" \
     -C "$PLUGIN_ROOT" .
 
 info "Upload plugin archive to ${SERVER_HOST}/${VM_NAME}"
@@ -365,7 +368,10 @@ if not hasattr(module, "register"):
     raise SystemExit("SeaTalk plugin package does not expose register(ctx)")
 PY
 
-hermes gateway install --force
+# Non-interactive: this hermes build prompts "Start the gateway now? [Y/n]"
+# which has no tty here; feed "y" so install does not hang/fail. The explicit
+# restart below brings the gateway up regardless.
+yes | hermes gateway install --force
 systemctl --user daemon-reload
 systemctl --user restart "\$service"
 sleep 3
@@ -373,6 +379,13 @@ systemctl --user --no-pager -l status "\$service" | sed -n '1,18p' || true
 hermes gateway status || true
 EOF
 )
+
+# Defensive pre-clean (as root): earlier root-context runs can leave root-owned
+# files under the plugin dir (e.g. __pycache__) and the logs dir (agent.log*),
+# which then break the hermes-user `rm -rf` during install and the gateway's log
+# writes on start. Normalizing ownership back to the runtime user is idempotent.
+info "Normalize remote ownership of plugin and log dirs (as root)"
+vm_root "chown -R ${REMOTE_USER}:${REMOTE_USER} ${REMOTE_PLUGIN_DIR} ${REMOTE_HERMES_HOME}/logs 2>/dev/null || true"
 
 vm_user_checked "$INSTALL_CMD"
 

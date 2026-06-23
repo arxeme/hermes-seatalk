@@ -79,7 +79,7 @@ async def test_t03_01_home_channel_send(monkeypatch):
     assert result.success is True
     assert client.calls == [("single", "EmpHome", {
         "tag": "text",
-        "text": {"format": 1, "content": "hello"},
+        "text": {"format": 2, "content": "hello"},
     }, None)]
 
 
@@ -92,7 +92,7 @@ async def test_t03_02_specified_channel_send(monkeypatch):
 
     assert client.calls[0] == ("group", "GroupABC", {
         "tag": "text",
-        "text": {"format": 1, "content": "hello group"},
+        "text": {"format": 2, "content": "hello group"},
     }, None)
 
 
@@ -173,7 +173,7 @@ async def test_t03_07_coalescer_default_merges_same_target(monkeypatch):
 
     assert client.calls == [("single", "EmpABC", {
         "tag": "text",
-        "text": {"format": 1, "content": "one\n\ntwo"},
+        "text": {"format": 2, "content": "one\n\ntwo"},
     }, None)]
 
 
@@ -294,7 +294,7 @@ async def test_t03_11_per_account_coalescing_isolation(monkeypatch):
 
     assert staging_client.calls == [("single", "EmpXYZ", {
         "tag": "text",
-        "text": {"format": 1, "content": "immediate"},
+        "text": {"format": 2, "content": "immediate"},
     }, None)]
     assert default_client.calls == []
 
@@ -302,7 +302,7 @@ async def test_t03_11_per_account_coalescing_isolation(monkeypatch):
 
     assert default_client.calls == [("single", "EmpABC", {
         "tag": "text",
-        "text": {"format": 1, "content": "queued"},
+        "text": {"format": 2, "content": "queued"},
     }, None)]
 
 
@@ -333,7 +333,7 @@ async def test_t03_14_inbound_event_caches_email_for_later_send(monkeypatch):
     assert result.success is True
     assert client.calls[-1] == ("single", "EmpABC", {
         "tag": "text",
-        "text": {"format": 1, "content": "reply"},
+        "text": {"format": 2, "content": "reply"},
     }, None)
 
 
