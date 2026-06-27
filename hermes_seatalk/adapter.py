@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import inspect
 import logging
 import os
 import re
@@ -1554,47 +1553,26 @@ async def _seatalk_send_to_platform(
     return {"success": True, "message_id": message_id}
 
 
-def _patch_home_channel() -> None:
-    """Read SeaTalk home channel values from Hermes' standard env contract."""
-    try:
-        from gateway.config import GatewayConfig, HomeChannel
-    except Exception:
-        return
+def _seatalk_env_enablement() -> dict[str, Any] | None:
+    """Seed the SeaTalk home channel from Hermes' standard env contract.
 
-    original = GatewayConfig.get_home_channel
-    if getattr(original, "_seatalk_patched", False):
-        return
-
-    def _patched_get_home_channel(self, platform):
-        result = original(self, platform)
-        if result is not None:
-            return result
-        if _platform_value(platform) != SEATALK_PLATFORM:
-            return None
-        home = os.getenv("SEATALK_HOME_CHANNEL", "").strip()
-        if not home:
-            return None
-        return _make_home_channel(
-            HomeChannel,
-            platform=platform,
-            chat_id=home,
-            name=os.getenv("SEATALK_HOME_CHANNEL_NAME", "SeaTalk Home"),
-            thread_id=os.getenv("SEATALK_HOME_CHANNEL_THREAD_ID", "").strip() or None,
-        )
-
-    _patched_get_home_channel._seatalk_patched = True  # type: ignore[attr-defined]
-    _patched_get_home_channel._seatalk_original = original  # type: ignore[attr-defined]
-    GatewayConfig.get_home_channel = _patched_get_home_channel
-
-
-def _make_home_channel(home_channel_cls: Any, *, platform: Any, chat_id: str, name: str, thread_id: str | None) -> Any:
-    kwargs = {"platform": platform, "chat_id": chat_id, "name": name}
-    try:
-        if "thread_id" in inspect.signature(home_channel_cls).parameters:
-            kwargs["thread_id"] = thread_id
-    except (TypeError, ValueError):
-        pass
-    return home_channel_cls(**kwargs)
+    Replaces the former ``GatewayConfig.get_home_channel`` monkey-patch. The
+    platform registry calls this during ``load_gateway_config()`` (before the
+    adapter is constructed), extracts the special ``home_channel`` key, and
+    wires it up as a proper ``HomeChannel`` — with thread support — on the
+    ``PlatformConfig``. ``GatewayConfig.get_home_channel`` then returns it via
+    the standard ``config.home_channel`` path, no patching required.
+    """
+    home = os.getenv("SEATALK_HOME_CHANNEL", "").strip()
+    if not home:
+        return None
+    return {
+        "home_channel": {
+            "chat_id": home,
+            "name": os.getenv("SEATALK_HOME_CHANNEL_NAME", "SeaTalk Home"),
+            "thread_id": os.getenv("SEATALK_HOME_CHANNEL_THREAD_ID", "").strip() or None,
+        }
+    }
 
 
 def _platform_value(platform: Any) -> str:
@@ -1640,7 +1618,6 @@ def register(ctx: Any) -> None:
     os.environ[INTERNAL_ALLOW_ALL_ENV] = "true"
     _patch_send_message_tool()
     _patch_send_to_platform()
-    _patch_home_channel()
 
     if getattr(ctx, "_seatalk_platform_registered", False):
         return
@@ -1659,6 +1636,7 @@ def register(ctx: Any) -> None:
         emoji="💬",
         platform_hint=_SEATALK_PLATFORM_HINT,
         cron_deliver_env_var="SEATALK_HOME_CHANNEL",
+        env_enablement_fn=_seatalk_env_enablement,
     )
     register_seatalk_tool(ctx)
     setattr(ctx, "_seatalk_platform_registered", True)

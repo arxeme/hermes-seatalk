@@ -63,96 +63,63 @@ def test_t08_08_target_parser_full_formats(monkeypatch):
     assert parse("seatalk", "group/GroupABC:ThreadXYZ") == ("group/GroupABC", "ThreadXYZ", True)
 
 
-def test_t08_03_home_channel(monkeypatch):
-    from gateway.config import GatewayConfig
+def test_t08_03_env_enablement_home_channel(monkeypatch):
+    """The env-driven home channel replaces the get_home_channel patch.
 
-    platform = _register_platform_entry()
-    original = getattr(GatewayConfig.get_home_channel, "_seatalk_original", GatewayConfig.get_home_channel)
-    monkeypatch.setattr(GatewayConfig, "get_home_channel", original)
+    ``_seatalk_env_enablement`` returns a ``home_channel`` dict that the
+    platform registry wires up as a proper ``HomeChannel`` on the
+    ``PlatformConfig`` before adapter construction.
+    """
+    monkeypatch.delenv("SEATALK_HOME_CHANNEL_THREAD_ID", raising=False)
     monkeypatch.setenv("SEATALK_HOME_CHANNEL", "group/Home")
 
-    seatalk_adapter._patch_home_channel()
-    cfg = GatewayConfig.__new__(GatewayConfig)
-    cfg.platforms = {
-        platform: SimpleNamespace(home_channel=None, extra={})
+    seed = seatalk_adapter._seatalk_env_enablement()
+
+    assert seed == {
+        "home_channel": {
+            "chat_id": "group/Home",
+            "name": "SeaTalk Home",
+            "thread_id": None,
+        }
     }
 
-    home = cfg.get_home_channel(platform)
 
-    assert home.chat_id == "group/Home"
-    assert home.name == "SeaTalk Home"
-    assert home.thread_id is None
-
-
-def test_t08_04_home_thread_id(monkeypatch):
-    from gateway.config import GatewayConfig
-
-    platform = _register_platform_entry()
-    original = getattr(GatewayConfig.get_home_channel, "_seatalk_original", GatewayConfig.get_home_channel)
-    monkeypatch.setattr(GatewayConfig, "get_home_channel", original)
+def test_t08_04_env_enablement_home_thread_id(monkeypatch):
     monkeypatch.setenv("SEATALK_HOME_CHANNEL", "group/Home")
     monkeypatch.setenv("SEATALK_HOME_CHANNEL_THREAD_ID", "ThreadHome")
+    monkeypatch.setenv("SEATALK_HOME_CHANNEL_NAME", "Ops")
 
-    seatalk_adapter._patch_home_channel()
-    cfg = GatewayConfig.__new__(GatewayConfig)
-    cfg.platforms = {
-        platform: SimpleNamespace(home_channel=None, extra={})
-    }
+    seed = seatalk_adapter._seatalk_env_enablement()
 
-    home = cfg.get_home_channel(platform)
-
-    assert home.chat_id == "group/Home"
-    assert home.thread_id == "ThreadHome"
+    assert seed["home_channel"]["chat_id"] == "group/Home"
+    assert seed["home_channel"]["thread_id"] == "ThreadHome"
+    assert seed["home_channel"]["name"] == "Ops"
 
 
-def test_t08_09_home_channel_legacy_without_thread_id():
-    class LegacyHomeChannel:
-        def __init__(self, *, platform, chat_id, name):
-            self.platform = platform
-            self.chat_id = chat_id
-            self.name = name
+def test_t08_09_env_enablement_unset_returns_none(monkeypatch):
+    """No SEATALK_HOME_CHANNEL → no seed, so a YAML-configured home channel
+    (read via the standard ``config.home_channel`` path) is left untouched."""
+    monkeypatch.delenv("SEATALK_HOME_CHANNEL", raising=False)
 
-    home = seatalk_adapter._make_home_channel(
-        LegacyHomeChannel,
-        platform="seatalk",
-        chat_id="staging:group/Home",
-        name="SeaTalk Home",
-        thread_id="ThreadHome",
+    assert seatalk_adapter._seatalk_env_enablement() is None
+
+
+def test_t08_10_env_enablement_registered_on_platform_entry():
+    """register() must wire the env enablement hook so core can seed the
+    home channel without the old GatewayConfig.get_home_channel patch."""
+    captured = {}
+
+    def fake_register_platform(**kwargs):
+        captured.update(kwargs)
+
+    ctx = SimpleNamespace(
+        register_platform=fake_register_platform,
+        register_tool=lambda **kw: None,
     )
+    seatalk_adapter.register(ctx)
 
-    assert home.chat_id == "staging:group/Home"
-    assert home.name == "SeaTalk Home"
-    assert not hasattr(home, "thread_id")
-
-
-def test_t08_10_patched_home_channel_legacy_without_thread_id(monkeypatch):
-    import gateway.config as gateway_config
-    from gateway.config import GatewayConfig
-
-    class LegacyHomeChannel:
-        def __init__(self, *, platform, chat_id, name):
-            self.platform = platform
-            self.chat_id = chat_id
-            self.name = name
-
-    platform = _register_platform_entry()
-    original = getattr(GatewayConfig.get_home_channel, "_seatalk_original", GatewayConfig.get_home_channel)
-    monkeypatch.setattr(GatewayConfig, "get_home_channel", original)
-    monkeypatch.setattr(gateway_config, "HomeChannel", LegacyHomeChannel)
-    monkeypatch.setenv("SEATALK_HOME_CHANNEL", "default:group/Home")
-    monkeypatch.setenv("SEATALK_HOME_CHANNEL_THREAD_ID", "ThreadHome")
-
-    seatalk_adapter._patch_home_channel()
-    cfg = GatewayConfig.__new__(GatewayConfig)
-    cfg.platforms = {
-        platform: SimpleNamespace(home_channel=None, extra={})
-    }
-
-    home = cfg.get_home_channel(platform)
-
-    assert home.chat_id == "default:group/Home"
-    assert home.name == "SeaTalk Home"
-    assert not hasattr(home, "thread_id")
+    assert captured.get("env_enablement_fn") is seatalk_adapter._seatalk_env_enablement
+    assert captured.get("cron_deliver_env_var") == "SEATALK_HOME_CHANNEL"
 
 
 @pytest.mark.asyncio
@@ -384,31 +351,24 @@ def test_t08_05_cron_target(monkeypatch):
 
 def test_t08_06_patch_idempotent(monkeypatch):
     import tools.send_message_tool as send_message_tool
-    from gateway.config import GatewayConfig
 
     original_parse = getattr(send_message_tool._parse_target_ref, "_seatalk_original", send_message_tool._parse_target_ref)
     original_send = getattr(send_message_tool._send_to_platform, "_seatalk_original", send_message_tool._send_to_platform)
-    original_home = getattr(GatewayConfig.get_home_channel, "_seatalk_original", GatewayConfig.get_home_channel)
     monkeypatch.setattr(send_message_tool, "_parse_target_ref", original_parse)
     monkeypatch.setattr(send_message_tool, "_send_to_platform", original_send)
-    monkeypatch.setattr(GatewayConfig, "get_home_channel", original_home)
 
     seatalk_adapter._patch_send_message_tool()
     seatalk_adapter._patch_send_to_platform()
-    seatalk_adapter._patch_home_channel()
     once = (
         send_message_tool._parse_target_ref,
         send_message_tool._send_to_platform,
-        GatewayConfig.get_home_channel,
     )
     seatalk_adapter._patch_send_message_tool()
     seatalk_adapter._patch_send_to_platform()
-    seatalk_adapter._patch_home_channel()
 
     assert once == (
         send_message_tool._parse_target_ref,
         send_message_tool._send_to_platform,
-        GatewayConfig.get_home_channel,
     )
 
 

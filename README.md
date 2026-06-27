@@ -183,8 +183,9 @@ SeaTalk sender email is preferred as `user_id`; when email is unavailable,
 employee code is preserved as the fallback identity. SeaTalk policy is enforced
 by the plugin before messages are passed into Hermes.
 
-Home channel is not stored in `config.yaml`. It follows Hermes' standard env
-contract:
+Home channel is not stored in `config.yaml`. The plugin reads it from Hermes'
+standard env contract when the gateway loads its configuration, so set these
+variables and restart the gateway to apply changes:
 
 ```dotenv
 SEATALK_HOME_CHANNEL=default:group/123
