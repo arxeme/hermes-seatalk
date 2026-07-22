@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import socket as _socket
 import sys
 import threading
 from collections.abc import Awaitable, Callable
@@ -29,7 +30,7 @@ DispatchFn = Callable[[dict[str, Any], str], Awaitable[None]]
 # Matches seatalk_oapi_sdk.DEFAULT_WEB_SOCKET_URL; kept here so the adapter can
 # default config without importing the SDK at module load time.
 DEFAULT_WEBSOCKET_URL = "wss://ws-openapi.haiserve.com/ws/bot"
-_DISPATCH_TIMEOUT_SECONDS = 30.0
+_TCP_KEEPALIVE_IDLE_SECONDS = 60
 
 
 def _import_sdk() -> Any:
@@ -136,7 +137,14 @@ class SeaTalkWebSocketClient:
                 self.auth_failed = True
                 self.last_error = str(exc)
                 logger.warning("SeaTalk websocket missing credentials: %s", exc)
-            except Exception as exc:  # noqa: BLE001 - kick / socket / transient errors reconnect
+            except sdk.KickError as exc:
+                # Another connection for this app replaced us. Back off fully
+                # before reconnecting; otherwise two instances kick each other
+                # in a tight loop.
+                self.last_error = f"kicked by another connection: {exc}"
+                logger.warning("SeaTalk websocket %s; backing off to max before reconnect", self.last_error)
+                backoff = self.reconnect_max_seconds
+            except Exception as exc:  # noqa: BLE001 - socket / transient errors reconnect
                 self.last_error = str(exc)
                 logger.warning("SeaTalk websocket error: %s", exc)
             self.connected.clear()
@@ -147,7 +155,17 @@ class SeaTalkWebSocketClient:
 
     async def _connect_once(self, sdk: Any) -> None:
         assert self._loop is not None
-        dispatcher = sdk.EventDispatcher().on_event(self._on_event)
+        # on_event drives dispatch + auto-ack. Suppress the SDK's default
+        # on_envelope handler (it prints every event payload to stdout) and route
+        # malformed frames to our logger instead.
+        dispatcher = (
+            sdk.EventDispatcher()
+            .on_event(self._on_event)
+            .on_envelope(None)
+            .on_invalid_frame(
+                lambda payload, err: logger.warning("SeaTalk websocket invalid frame: %s", err)
+            )
+        )
         if self._client_factory is not None:
             client = self._client_factory(self.app_id, self.app_secret, self.ws_url, dispatcher)
         else:
@@ -166,6 +184,7 @@ class SeaTalkWebSocketClient:
             # the SDK's internal heartbeat) until the stop event is set or the
             # connection drops.
             await self._loop.run_in_executor(None, client.connect)
+            _apply_tcp_keepalive(client)
             self.last_error = None
             self.connected.set()
             await self._loop.run_in_executor(None, lambda: client.start(self._thread_stop))
@@ -186,9 +205,12 @@ class SeaTalkWebSocketClient:
         is exactly the shape ``SeaTalkEventDispatcher`` already consumes for
         webhook/relay — so no inbound parsing changes are needed.
 
-        Must not raise: an exception here would tear down the listen loop. We
-        log and let the SDK ack so a single bad event doesn't drop the
-        connection (matches webhook/relay, which also do not redeliver).
+        Acks on receipt: we schedule dispatch on the gateway loop and return
+        immediately so the SDK acks now, without waiting for normalization,
+        inbound media download, or agent processing (which could exceed the
+        server's ack timeout and trigger redelivery). ``event_id`` dedup in the
+        dispatcher guards against any redelivery. Returning without raising also
+        keeps a single bad event from tearing down the listen loop.
         """
         payload = getattr(event, "data", None)
         if not isinstance(payload, dict):
@@ -196,8 +218,29 @@ class SeaTalkWebSocketClient:
         loop = self._loop
         if loop is None:
             return
+        asyncio.run_coroutine_threadsafe(self._safe_dispatch(payload), loop)
+
+    async def _safe_dispatch(self, payload: dict[str, Any]) -> None:
         try:
-            future = asyncio.run_coroutine_threadsafe(self.dispatch(payload, "websocket"), loop)
-            future.result(timeout=_DISPATCH_TIMEOUT_SECONDS)
+            await self.dispatch(payload, "websocket")
         except Exception as exc:  # noqa: BLE001
             logger.warning("SeaTalk websocket dispatch failed: %s", exc)
+
+
+def _apply_tcp_keepalive(client: Any, idle_seconds: int = _TCP_KEEPALIVE_IDLE_SECONDS) -> None:
+    """Best-effort SO_KEEPALIVE on the SDK's underlying socket.
+
+    The SDK reads without a socket timeout and relies on heartbeat-send failure
+    to notice a dead peer; TCP keepalive lets the OS detect a silently-dropped
+    connection so reconnect happens sooner. Best-effort: the socket lives on a
+    private SDK attribute, so silently skip if unavailable.
+    """
+    try:
+        sock = client._conn._sock  # type: ignore[attr-defined]
+        if sock is None:
+            return
+        sock.setsockopt(_socket.SOL_SOCKET, _socket.SO_KEEPALIVE, 1)
+        if hasattr(_socket, "TCP_KEEPIDLE"):
+            sock.setsockopt(_socket.IPPROTO_TCP, _socket.TCP_KEEPIDLE, idle_seconds)
+    except Exception:  # noqa: BLE001
+        pass

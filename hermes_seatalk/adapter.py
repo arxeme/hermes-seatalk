@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import inspect
 import logging
 import os
 import re
@@ -161,11 +160,13 @@ def _secrets_from_env() -> bool:
 
 
 def _credentials_from_config(config: Any) -> bool:
+    mode = _cfg_value(config, "mode").lower()
+    has_signing = bool(_cfg_value(config, "signing_secret")) or mode == "websocket"
     return bool(
         _cfg_value(config, "app_id")
         and _cfg_value(config, "app_secret")
-        and _cfg_value(config, "signing_secret")
-        and _cfg_value(config, "mode")
+        and has_signing
+        and mode
     )
 
 
@@ -259,10 +260,14 @@ def _build_account_config(account_id: str, data: dict[str, Any]) -> SeaTalkAccou
     app_secret = _text_value(data.get("app_secret"))
     signing_secret = _text_value(data.get("signing_secret"))
     mode = _text_value(data.get("mode")).lower()
-    if not app_id or not app_secret or not signing_secret or not mode:
-        raise ValueError(f"SeaTalk account {account_id} is missing required credentials or mode")
+    if not app_id or not app_secret or not mode:
+        raise ValueError(f"SeaTalk account {account_id} is missing required credentials (app_id, app_secret) or mode")
     if mode not in VALID_MODES:
         raise ValueError(f"SeaTalk account {account_id} has invalid mode: {mode}")
+    # signing_secret is used for webhook HMAC verification and relay auth. Native
+    # WebSocket mode authenticates via app_id/app_secret only, so it is optional.
+    if mode != "websocket" and not signing_secret:
+        raise ValueError(f"SeaTalk account {account_id} requires signing_secret in {mode} mode")
 
     dm_policy = _text_value(data.get("dm_policy")).lower() or "allowlist"
     if dm_policy not in VALID_DM_POLICIES:
@@ -1235,7 +1240,7 @@ def _seatalk_setup_wizard() -> None:
     for key, label in (
         ("app_id", "SeaTalk app id"),
         ("app_secret", "SeaTalk app secret"),
-        ("signing_secret", "SeaTalk signing secret"),
+        ("signing_secret", "SeaTalk signing secret (webhook/relay; optional for websocket)"),
     ):
         value = prompt(label, default=str(account.get(key) or ""))
         _set_optional(account, key, value)
@@ -1554,47 +1559,26 @@ async def _seatalk_send_to_platform(
     return {"success": True, "message_id": message_id}
 
 
-def _patch_home_channel() -> None:
-    """Read SeaTalk home channel values from Hermes' standard env contract."""
-    try:
-        from gateway.config import GatewayConfig, HomeChannel
-    except Exception:
-        return
+def _seatalk_env_enablement() -> dict[str, Any] | None:
+    """Seed the SeaTalk home channel from Hermes' standard env contract.
 
-    original = GatewayConfig.get_home_channel
-    if getattr(original, "_seatalk_patched", False):
-        return
-
-    def _patched_get_home_channel(self, platform):
-        result = original(self, platform)
-        if result is not None:
-            return result
-        if _platform_value(platform) != SEATALK_PLATFORM:
-            return None
-        home = os.getenv("SEATALK_HOME_CHANNEL", "").strip()
-        if not home:
-            return None
-        return _make_home_channel(
-            HomeChannel,
-            platform=platform,
-            chat_id=home,
-            name=os.getenv("SEATALK_HOME_CHANNEL_NAME", "SeaTalk Home"),
-            thread_id=os.getenv("SEATALK_HOME_CHANNEL_THREAD_ID", "").strip() or None,
-        )
-
-    _patched_get_home_channel._seatalk_patched = True  # type: ignore[attr-defined]
-    _patched_get_home_channel._seatalk_original = original  # type: ignore[attr-defined]
-    GatewayConfig.get_home_channel = _patched_get_home_channel
-
-
-def _make_home_channel(home_channel_cls: Any, *, platform: Any, chat_id: str, name: str, thread_id: str | None) -> Any:
-    kwargs = {"platform": platform, "chat_id": chat_id, "name": name}
-    try:
-        if "thread_id" in inspect.signature(home_channel_cls).parameters:
-            kwargs["thread_id"] = thread_id
-    except (TypeError, ValueError):
-        pass
-    return home_channel_cls(**kwargs)
+    Replaces the former ``GatewayConfig.get_home_channel`` monkey-patch. The
+    platform registry calls this during ``load_gateway_config()`` (before the
+    adapter is constructed), extracts the special ``home_channel`` key, and
+    wires it up as a proper ``HomeChannel`` — with thread support — on the
+    ``PlatformConfig``. ``GatewayConfig.get_home_channel`` then returns it via
+    the standard ``config.home_channel`` path, no patching required.
+    """
+    home = os.getenv("SEATALK_HOME_CHANNEL", "").strip()
+    if not home:
+        return None
+    return {
+        "home_channel": {
+            "chat_id": home,
+            "name": os.getenv("SEATALK_HOME_CHANNEL_NAME", "SeaTalk Home"),
+            "thread_id": os.getenv("SEATALK_HOME_CHANNEL_THREAD_ID", "").strip() or None,
+        }
+    }
 
 
 def _platform_value(platform: Any) -> str:
@@ -1640,7 +1624,6 @@ def register(ctx: Any) -> None:
     os.environ[INTERNAL_ALLOW_ALL_ENV] = "true"
     _patch_send_message_tool()
     _patch_send_to_platform()
-    _patch_home_channel()
 
     if getattr(ctx, "_seatalk_platform_registered", False):
         return
@@ -1659,6 +1642,7 @@ def register(ctx: Any) -> None:
         emoji="💬",
         platform_hint=_SEATALK_PLATFORM_HINT,
         cron_deliver_env_var="SEATALK_HOME_CHANNEL",
+        env_enablement_fn=_seatalk_env_enablement,
     )
     register_seatalk_tool(ctx)
     setattr(ctx, "_seatalk_platform_registered", True)

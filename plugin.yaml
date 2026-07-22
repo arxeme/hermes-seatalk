@@ -3,7 +3,8 @@ kind: platform
 version: 1.0.0
 description: >
   SeaTalk messaging platform adapter for Hermes Agent.
-  Supports DM and group/thread messages via webhook or relay gateway.
+  Supports DM and group/thread messages via webhook, relay gateway,
+  or SeaTalk's native WebSocket event callback.
   Connects to SeaTalk Open Platform using a Bot App.
 author: AI Agent Team
 requires_env: []
