@@ -227,3 +227,73 @@ def test_t13_08_websocket_account_via_extra():
     )
     assert accounts["default"].mode == "websocket"
     assert accounts["default"].ws_url == DEFAULT_WEBSOCKET_URL
+
+
+def test_t13_10_signing_secret_optional_for_websocket_required_otherwise():
+    # websocket: signing_secret not required (SDK authenticates with app creds).
+    cfg = _build_account_config(
+        "default", {"app_id": "a", "app_secret": "b", "mode": "websocket"}
+    )
+    assert cfg.mode == "websocket"
+    assert cfg.signing_secret == ""
+    # relay/webhook still require signing_secret.
+    with pytest.raises(ValueError, match="signing_secret"):
+        _build_account_config(
+            "default",
+            {"app_id": "a", "app_secret": "b", "mode": "relay", "relay_url": "wss://x/ws"},
+        )
+    with pytest.raises(ValueError, match="signing_secret"):
+        _build_account_config("default", {"app_id": "a", "app_secret": "b", "mode": "webhook"})
+
+
+@pytest.mark.asyncio
+async def test_t13_11_kick_backs_off_to_max_and_is_not_auth_failure():
+    delays: list[float] = []
+
+    async def recording_sleep(delay):
+        delays.append(delay)
+        await asyncio.sleep(0)
+
+    calls = {"n": 0}
+    reconnected = asyncio.Event()
+
+    class _KickThenIdleClient:
+        def __init__(self, dispatcher):
+            self.dispatcher = dispatcher
+
+        def connect(self):
+            return sdk.RegisterResult(app_id="app-id", token="tok")
+
+        def ack(self, callback_id):
+            pass
+
+        def start(self, stop_event):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise sdk.KickError("replaced by another connection")
+            reconnected.set()
+            stop_event.wait()
+
+        def close(self):
+            pass
+
+    ws = SeaTalkWebSocketClient(
+        ws_url="wss://example/ws",
+        app_id="app-id",
+        app_secret="app-secret",
+        dispatch=lambda _e, _s: None,
+        reconnect_initial_seconds=1,
+        reconnect_max_seconds=30,
+        sleep_fn=recording_sleep,
+        client_factory=lambda a, s, u, d: _KickThenIdleClient(d),
+    )
+    try:
+        assert await ws.start(timeout=1) is True
+        await asyncio.wait_for(reconnected.wait(), timeout=1)
+        # Kick must not be treated as an auth failure, and backoff jumps to max
+        # (not the 1s initial value that would cause a tight mutual-kick loop).
+        assert ws.auth_failed is False
+        assert 30 in delays
+        assert 1 not in delays
+    finally:
+        await ws.stop()

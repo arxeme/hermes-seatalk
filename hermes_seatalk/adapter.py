@@ -160,11 +160,13 @@ def _secrets_from_env() -> bool:
 
 
 def _credentials_from_config(config: Any) -> bool:
+    mode = _cfg_value(config, "mode").lower()
+    has_signing = bool(_cfg_value(config, "signing_secret")) or mode == "websocket"
     return bool(
         _cfg_value(config, "app_id")
         and _cfg_value(config, "app_secret")
-        and _cfg_value(config, "signing_secret")
-        and _cfg_value(config, "mode")
+        and has_signing
+        and mode
     )
 
 
@@ -258,10 +260,14 @@ def _build_account_config(account_id: str, data: dict[str, Any]) -> SeaTalkAccou
     app_secret = _text_value(data.get("app_secret"))
     signing_secret = _text_value(data.get("signing_secret"))
     mode = _text_value(data.get("mode")).lower()
-    if not app_id or not app_secret or not signing_secret or not mode:
-        raise ValueError(f"SeaTalk account {account_id} is missing required credentials or mode")
+    if not app_id or not app_secret or not mode:
+        raise ValueError(f"SeaTalk account {account_id} is missing required credentials (app_id, app_secret) or mode")
     if mode not in VALID_MODES:
         raise ValueError(f"SeaTalk account {account_id} has invalid mode: {mode}")
+    # signing_secret is used for webhook HMAC verification and relay auth. Native
+    # WebSocket mode authenticates via app_id/app_secret only, so it is optional.
+    if mode != "websocket" and not signing_secret:
+        raise ValueError(f"SeaTalk account {account_id} requires signing_secret in {mode} mode")
 
     dm_policy = _text_value(data.get("dm_policy")).lower() or "allowlist"
     if dm_policy not in VALID_DM_POLICIES:
@@ -1234,7 +1240,7 @@ def _seatalk_setup_wizard() -> None:
     for key, label in (
         ("app_id", "SeaTalk app id"),
         ("app_secret", "SeaTalk app secret"),
-        ("signing_secret", "SeaTalk signing secret"),
+        ("signing_secret", "SeaTalk signing secret (webhook/relay; optional for websocket)"),
     ):
         value = prompt(label, default=str(account.get(key) or ""))
         _set_optional(account, key, value)

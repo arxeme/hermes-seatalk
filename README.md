@@ -61,7 +61,9 @@ hermes gateway setup
 The SeaTalk wizard asks for values in this order:
 
 1. Account id and action: add/edit, disable, or remove.
-2. App identity and secrets: `app_id`, `app_secret`, and `signing_secret`.
+2. App identity and secrets: `app_id`, `app_secret`, and `signing_secret`
+   (leave `signing_secret` empty for `websocket` mode; it is only used by
+   webhook HMAC verification and relay auth).
 3. Inbound mode: `webhook`, `relay`, or `websocket`.
 4. Mode-specific values.
 5. SeaTalk authorization policy.
@@ -135,8 +137,9 @@ platforms:
 
 WebSocket mode connects outbound directly to SeaTalk's native Event Callback
 over a persistent WebSocket using the official `seatalk_oapi_sdk` (bundled,
-pure-stdlib, no public endpoint and no relay required). `ws_url` is optional and
-defaults to `wss://ws-openapi.haiserve.com/ws/bot`:
+pure-stdlib, no public endpoint and no relay required). It authenticates with
+`app_id`/`app_secret` only — `signing_secret` is not needed. `ws_url` is
+optional and defaults to `wss://ws-openapi.haiserve.com/ws/bot`:
 
 ```yaml
 platforms:
@@ -148,8 +151,8 @@ platforms:
           enabled: true
           app_id: your_app_id
           app_secret: your_app_secret
-          signing_secret: your_signing_secret
           mode: websocket
+          # signing_secret: not required in websocket mode
           # ws_url: wss://ws-openapi.haiserve.com/ws/bot   # optional
 ```
 
