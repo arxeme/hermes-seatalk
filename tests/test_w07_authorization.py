@@ -48,7 +48,15 @@ def _register_seatalk_auth_entry():
 
 def _gateway_auth(source: SessionSource) -> bool:
     _register_seatalk_auth_entry()
-    runner = SimpleNamespace(pairing_store=FakePairingStore())
+    pairing_store = FakePairingStore()
+    runner = SimpleNamespace(
+        pairing_store=pairing_store,
+        # authz_mixin consults the upstream-relay delegation check before the
+        # env allowlists, then resolves the (per-profile) pairing store;
+        # SeaTalk never delegates authz upstream and uses the global store.
+        _adapter_authorization_is_upstream=lambda platform, *, profile=None: False,
+        _pairing_store_for=lambda source: pairing_store,
+    )
     return GatewayRunner._is_user_authorized(runner, source)
 
 

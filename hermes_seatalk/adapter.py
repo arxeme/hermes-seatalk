@@ -498,7 +498,11 @@ class SeaTalkAdapter(BasePlatformAdapter):
             coalescers=coalescers,
         )
 
-    async def connect(self) -> bool:
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
+        # ``is_reconnect`` is required by the gateway connect contract
+        # (gateway/run.py always forwards it); SeaTalk rebuilds its relay
+        # clients on every connect, so both paths behave the same.
+        del is_reconnect
         if not self._runtimes:
             logger.warning(
                 "SeaTalk plugin is installed but no accounts are configured. "
@@ -1428,6 +1432,7 @@ def _patch_send_to_platform() -> None:
                 thread_id=thread_id,
                 media_files=media_files or [],
                 force_document=force_document,
+                pconfig=pconfig,
             )
         return await original(
             platform,
@@ -1469,16 +1474,20 @@ async def _seatalk_send_to_platform(
     thread_id: str | None = None,
     media_files: list[tuple[str, bool]] | None = None,
     force_document: bool = False,
+    pconfig: Any | None = None,
 ) -> dict[str, Any]:
     """SeaTalk-specific send path that preserves thread and native media.
 
     When ``force_document`` is True, image-extension files are routed through
     the document upload path so SeaTalk preserves the original quality / file
-    handling (mirrors the gateway-wide ``[[as_document]]`` skill directive)."""
+    handling (mirrors the gateway-wide ``[[as_document]]`` skill directive).
+
+    Prefers the live in-process adapter (marshaled onto the gateway loop).
+    When no runner/adapter is reachable and ``pconfig`` is available, falls
+    back to the one-shot standalone path so out-of-process callers (e.g. cron
+    running in a separate process) still deliver."""
     try:
         from gateway.run import _gateway_runner_ref
-        from gateway.platforms.base import BasePlatformAdapter
-        from gateway.platform_registry import platform_registry
     except Exception as exc:  # noqa: BLE001
         return {"error": f"SeaTalk send unavailable: {exc}"}
 
@@ -1500,6 +1509,15 @@ async def _seatalk_send_to_platform(
             await asyncio.sleep(_RUNNER_LOOKUP_BACKOFF_SECONDS[attempt])
 
     if runtime_adapter is None:
+        if pconfig is not None:
+            return await _seatalk_standalone_send(
+                pconfig,
+                chat_id,
+                message,
+                thread_id=thread_id,
+                media_files=media_files,
+                force_document=force_document,
+            )
         attempts = len(_RUNNER_LOOKUP_BACKOFF_SECONDS) + 1
         return {
             "error": (
@@ -1507,6 +1525,43 @@ async def _seatalk_send_to_platform(
                 "Is the gateway running with SeaTalk connected?"
             )
         }
+
+    return await _deliver_seatalk_message(
+        runtime_adapter,
+        chat_id,
+        message,
+        thread_id=thread_id,
+        media_files=media_files,
+        force_document=force_document,
+        runner=runner,
+    )
+
+
+async def _deliver_seatalk_message(
+    adapter: Any,
+    chat_id: str,
+    message: str,
+    *,
+    thread_id: str | None = None,
+    media_files: list[tuple[str, bool]] | None = None,
+    force_document: bool = False,
+    runner: Any = None,
+) -> dict[str, Any]:
+    """Send text chunks and media through *adapter*.
+
+    With ``runner`` the adapter is live in the gateway process and every call
+    is marshaled onto the gateway loop; without it the adapter is a throwaway
+    standalone instance and calls run on the current loop."""
+    try:
+        from gateway.platforms.base import BasePlatformAdapter
+        from gateway.platform_registry import platform_registry
+    except Exception as exc:  # noqa: BLE001
+        return {"error": f"SeaTalk send unavailable: {exc}"}
+
+    async def _call(make_coro: Any) -> Any:
+        if runner is not None:
+            return await _run_on_gateway_loop(runner, make_coro)
+        return await make_coro()
 
     metadata: dict[str, Any] = {"_skip_coalescing": True}
     if thread_id:
@@ -1516,9 +1571,8 @@ async def _seatalk_send_to_platform(
         entry = platform_registry.get(SEATALK_PLATFORM)
         max_len = entry.max_message_length if entry and entry.max_message_length else MAX_MESSAGE_LENGTH
         for chunk in BasePlatformAdapter.truncate_message(message, max_len):
-            result = await _run_on_gateway_loop(
-                runner,
-                lambda chunk=chunk: runtime_adapter.send(
+            result = await _call(
+                lambda chunk=chunk: adapter.send(
                     chat_id=chat_id,
                     content=chunk,
                     metadata=metadata,
@@ -1532,9 +1586,8 @@ async def _seatalk_send_to_platform(
         ext = Path(media_path).suffix.lower()
         is_image = ext in {".jpg", ".jpeg", ".png", ".webp", ".gif"}
         if is_image and not force_document:
-            result = await _run_on_gateway_loop(
-                runner,
-                lambda media_path=media_path: runtime_adapter.send_image_file(
+            result = await _call(
+                lambda media_path=media_path: adapter.send_image_file(
                     chat_id,
                     media_path,
                     caption="",
@@ -1542,9 +1595,8 @@ async def _seatalk_send_to_platform(
                 ),
             )
         else:
-            result = await _run_on_gateway_loop(
-                runner,
-                lambda media_path=media_path: runtime_adapter.send_document(
+            result = await _call(
+                lambda media_path=media_path: adapter.send_document(
                     chat_id,
                     media_path,
                     caption="",
@@ -1557,6 +1609,51 @@ async def _seatalk_send_to_platform(
 
     message_id = getattr(results[-1], "message_id", None) if results else None
     return {"success": True, "message_id": message_id}
+
+
+async def _seatalk_standalone_send(
+    pconfig: Any,
+    chat_id: str,
+    message: str,
+    *,
+    thread_id: str | None = None,
+    media_files: list[tuple[str, bool]] | None = None,
+    force_document: bool = False,
+) -> dict[str, Any]:
+    """One-shot SeaTalk delivery without a live gateway.
+
+    Registered as ``PlatformEntry.standalone_sender_fn`` and used as the
+    no-runner fallback of ``_seatalk_send_to_platform``. Builds a throwaway
+    adapter from the platform config — the OpenAPI client fetches its token
+    lazily, so no ``connect()`` is required — and closes every client when
+    done."""
+    try:
+        adapter = SeaTalkAdapter(pconfig)
+    except Exception as exc:  # noqa: BLE001
+        return {"error": f"SeaTalk standalone send unavailable: {exc}"}
+    if not adapter._runtimes:
+        return {"error": "SeaTalk standalone send unavailable: no accounts configured"}
+    # Email targets resolve through the account runtime, which gates lookups
+    # on connection state; a throwaway runtime has no live connection but its
+    # client is fully usable for outbound API calls.
+    for runtime in adapter._runtimes.values():
+        runtime.state = "running"
+    try:
+        return await _deliver_seatalk_message(
+            adapter,
+            chat_id,
+            message,
+            thread_id=thread_id,
+            media_files=media_files,
+            force_document=force_document,
+        )
+    finally:
+        for runtime in adapter._runtimes.values():
+            close = getattr(runtime.client, "close", None)
+            if close:
+                result = close()
+                if asyncio.iscoroutine(result):
+                    await result
 
 
 def _seatalk_env_enablement() -> dict[str, Any] | None:
@@ -1643,6 +1740,7 @@ def register(ctx: Any) -> None:
         platform_hint=_SEATALK_PLATFORM_HINT,
         cron_deliver_env_var="SEATALK_HOME_CHANNEL",
         env_enablement_fn=_seatalk_env_enablement,
+        standalone_sender_fn=_seatalk_standalone_send,
     )
     register_seatalk_tool(ctx)
     setattr(ctx, "_seatalk_platform_registered", True)
