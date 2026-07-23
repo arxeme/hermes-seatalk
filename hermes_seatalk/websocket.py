@@ -183,7 +183,8 @@ class SeaTalkWebSocketClient:
             # bad credentials. start(stop_event): blocks reading events (and runs
             # the SDK's internal heartbeat) until the stop event is set or the
             # connection drops.
-            await self._loop.run_in_executor(None, client.connect)
+            register_result = await self._loop.run_in_executor(None, client.connect)
+            _tune_ping_interval(client, register_result)
             _apply_tcp_keepalive(client)
             self.last_error = None
             self.connected.set()
@@ -225,6 +226,36 @@ class SeaTalkWebSocketClient:
             await self.dispatch(payload, "websocket")
         except Exception as exc:  # noqa: BLE001
             logger.warning("SeaTalk websocket dispatch failed: %s", exc)
+
+
+def _tune_ping_interval(client: Any, register_result: Any) -> None:
+    """Keep the session alive when the server's heartbeat_timeout is shorter
+    than its heartbeat_interval.
+
+    The SDK pings every ``heartbeat_interval`` and ignores ``heartbeat_timeout``.
+    The server has been observed returning interval=20/timeout=10: it marks the
+    session dead 10s after register — before the first ping — and silently stops
+    delivering events while keeping the TCP connection open. Ping at
+    ``min(interval, timeout / 2)`` so the session stays alive under either
+    parameter regime (verified live: 5s pings restore delivery and Re-verify).
+    """
+    try:
+        interval = float(getattr(register_result, "heartbeat_interval", 0) or 0)
+        timeout = float(getattr(register_result, "heartbeat_timeout", 0) or 0)
+        if timeout <= 0:
+            return
+        current = float(getattr(client, "ping_interval", 0) or interval or 15.0)
+        tuned = max(1.0, min(current, timeout / 2))
+        if tuned != current:
+            client.ping_interval = tuned
+            logger.info(
+                "SeaTalk websocket ping interval tuned: interval=%s timeout=%s -> ping every %ss",
+                interval,
+                timeout,
+                tuned,
+            )
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def _apply_tcp_keepalive(client: Any, idle_seconds: int = _TCP_KEEPALIVE_IDLE_SECONDS) -> None:
