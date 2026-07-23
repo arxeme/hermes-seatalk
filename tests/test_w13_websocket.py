@@ -229,6 +229,36 @@ def test_t13_08_websocket_account_via_extra():
     assert accounts["default"].ws_url == DEFAULT_WEBSOCKET_URL
 
 
+def test_t13_12_ping_interval_tuned_when_timeout_shorter_than_interval():
+    from hermes_seatalk.websocket import _tune_ping_interval
+
+    class _C:
+        ping_interval = 0.0
+
+    def _client_after_connect(interval):
+        # The SDK's connect() sets ping_interval to the server's
+        # heartbeat_interval before we tune; mirror that here.
+        client = _C()
+        client.ping_interval = interval
+        return client
+
+    # Live server regression: interval=20/timeout=10 killed the session before
+    # the first ping; the tuned cadence must dip under the timeout.
+    client = _client_after_connect(20.0)
+    _tune_ping_interval(client, sdk.RegisterResult(app_id="a", token="t", heartbeat_interval=20.0, heartbeat_timeout=10.0))
+    assert client.ping_interval == 5.0
+
+    # Sane server values (timeout comfortably above interval) stay untouched.
+    client = _client_after_connect(15.0)
+    _tune_ping_interval(client, sdk.RegisterResult(app_id="a", token="t", heartbeat_interval=15.0, heartbeat_timeout=75.0))
+    assert client.ping_interval == 15.0
+
+    # Missing timeout -> no change.
+    client = _client_after_connect(15.0)
+    _tune_ping_interval(client, sdk.RegisterResult(app_id="a", token="t", heartbeat_interval=15.0))
+    assert client.ping_interval == 15.0
+
+
 def test_t13_10_signing_secret_optional_for_websocket_required_otherwise():
     # websocket: signing_secret not required (SDK authenticates with app creds).
     cfg = _build_account_config(
