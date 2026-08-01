@@ -6,7 +6,8 @@ import asyncio
 import logging
 import os
 import re
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
@@ -96,6 +97,9 @@ class SeaTalkAccountConfig:
     processing_indicator: str = "typing"
     media_allow_hosts: tuple[str, ...] = ()
     outbound_coalescing: bool = True
+    # Per-account tool-action switches (``tools.<action>: false`` disables one).
+    # Absent actions default to enabled; see hermes_seatalk.tools.
+    tools: Mapping[str, bool] = field(default_factory=dict)
 
 
 @dataclass
@@ -323,7 +327,19 @@ def _build_account_config(account_id: str, data: dict[str, Any]) -> SeaTalkAccou
         processing_indicator=processing_indicator,
         media_allow_hosts=tuple(_csv_list(data.get("media_allow_hosts"))),
         outbound_coalescing=_is_enabled(data.get("outbound_coalescing"), True),
+        tools=_tool_switches(data.get("tools")),
     )
+
+
+def _tool_switches(raw: Any) -> dict[str, bool]:
+    """Parse ``tools.<action>: bool``. Unlisted actions stay enabled."""
+    if not isinstance(raw, dict):
+        return {}
+    return {
+        str(action): _is_enabled(value, True)
+        for action, value in raw.items()
+        if value is not None
+    }
 
 
 def _build_all_secrets(accounts: dict[str, SeaTalkAccountConfig]) -> list[str]:

@@ -54,7 +54,7 @@ def _make_handler(client=None):
 # ── Schema ────────────────────────────────────────────────────────────────────
 
 def test_t11_01_schema_name_and_required():
-    assert SEATALK_TOOL_SCHEMA["name"] == "seatalk_query"
+    assert SEATALK_TOOL_SCHEMA["name"] == "seatalk"
     assert "description" in SEATALK_TOOL_SCHEMA
     params = SEATALK_TOOL_SCHEMA["parameters"]
     assert params["type"] == "object"
@@ -63,7 +63,10 @@ def test_t11_01_schema_name_and_required():
 
 def test_t11_02_schema_action_enum():
     actions = set(SEATALK_TOOL_SCHEMA["parameters"]["properties"]["action"]["enum"])
-    assert actions == {"group_history", "group_info", "group_list", "thread_history", "get_message"}
+    assert actions == {
+        "group_history", "group_info", "group_list", "thread_history", "get_message",
+        "send_message",
+    }
 
 
 def test_t11_03_schema_has_all_parameter_fields():
@@ -337,7 +340,7 @@ def test_t11_70_register_uses_ctx():
 
     assert len(ctx.tools) == 1
     tool = ctx.tools[0]
-    assert tool["name"] == "seatalk_query"
+    assert tool["name"] == "seatalk"
     assert tool["toolset"] == "seatalk-platform"
     assert tool["is_async"] is True
     assert callable(tool["handler"])
