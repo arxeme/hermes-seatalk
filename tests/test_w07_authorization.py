@@ -56,6 +56,8 @@ def _gateway_auth(source: SessionSource) -> bool:
         # SeaTalk never delegates authz upstream and uses the global store.
         _adapter_authorization_is_upstream=lambda platform, *, profile=None: False,
         _pairing_store_for=lambda source: pairing_store,
+        # Single-profile gateway: adapter policy lookups resolve to no profile.
+        _adapter_profile_for_source=lambda source: None,
     )
     return GatewayRunner._is_user_authorized(runner, source)
 
