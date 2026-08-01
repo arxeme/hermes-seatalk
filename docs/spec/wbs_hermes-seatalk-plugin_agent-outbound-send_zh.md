@@ -1,7 +1,6 @@
 ---
 标题: Hermes SeaTalk Plugin Agent 主动外发能力工作分解结构
-状态: draft
-更新日期: 2026-07-31
+状态: final
 基线:
   hermes-agent 版本: v2026.7.30 (v0.19.1)
   参照实现: hermes-telex `telex` 工具的 `send_message` 动作
