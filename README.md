@@ -201,6 +201,50 @@ SEATALK_HOME_CHANNEL_NAME=SeaTalk Home
 SeaTalk group ids only. When multiple accounts are configured, use an
 account-qualified target such as `staging:group/123`.
 
+## Agent Tool
+
+The plugin registers a `seatalk` tool. Five actions read (`group_history`,
+`group_info`, `group_list`, `thread_history`, `get_message`) and one sends
+(`send_message`).
+
+`send_message` exists because hermes has no agent-callable core `send_message`
+tool — outbound is expected to come from a platform-native tool. Targets are
+resolved inside the plugin, so the model supplies a plain destination rather than
+a cross-platform target string:
+
+| `target` | Reaches |
+| --- | --- |
+| `EmpABC` | that employee's DM |
+| `alice@example.com` | the same DM, resolved to the employee code automatically |
+| `group/<group_id>` | that group |
+| `staging:EmpABC` | the DM on account `staging` |
+| `group/<group_id>:<thread_id>` | that thread |
+
+Sending is restricted to the account's existing whitelists — `allow_from` for
+DMs, `group_allow_from` for groups (and `group_policy: disabled` blocks groups
+outright). `allow_from` may list either emails or employee codes; an email target
+matches on either form. An empty whitelist rejects rather than allows, so the
+agent cannot message anyone the account has not been told to talk to. Attachments
+come from `media_paths`; image extensions are sent as images and everything else
+as a document.
+
+Any action can be switched off per account, which is how you keep the read
+actions while denying outbound:
+
+```yaml
+platforms:
+  seatalk:
+    extra:
+      accounts:
+        default:
+          tools:
+            send_message: false
+```
+
+Actions not listed stay enabled.
+
+## Publishing
+
 The repository publishes installable runtime content through the `publish`
 branch. `scripts/publish-release.sh` keeps that branch limited to plugin runtime
 files and README content; it does not publish docs, tests, deploy helpers, or
