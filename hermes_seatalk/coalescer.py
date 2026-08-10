@@ -144,6 +144,16 @@ class OutboundCoalescer:
         self._idle_task = None
         if task is None or task.done():
             return
+        # `flush` cancels the pending idle task before sending, but `_idle_flush`
+        # calls `flush` itself — cancelling there would abort the very task that
+        # is doing the send, raising CancelledError at the first await inside
+        # `_send_text` and killing the request mid-flight. Never cancel self.
+        try:
+            if task is asyncio.current_task():
+                return
+        except RuntimeError:
+            # No running loop (sync caller): the task cannot be the current one.
+            pass
         task.cancel()
 
 
