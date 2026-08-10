@@ -59,7 +59,7 @@ class OutboundCoalescer:
         if not self._buffer:
             return
         text = self._consume_buffer()
-        task = asyncio.create_task(self._send_text(text))
+        task = asyncio.create_task(self._deliver(text, reason="overflow"))
         task.add_done_callback(
             lambda t: logger.warning("SeaTalk coalescer send failed: %s", t.exception())
             if not t.cancelled() and t.exception()
@@ -70,12 +70,50 @@ class OutboundCoalescer:
         self._cancel_idle_task()
         if not self._buffer:
             return
-        await self._send_text(self._consume_buffer())
+        await self._deliver(self._consume_buffer(), reason="flush")
 
     def _consume_buffer(self) -> str:
         text = self._buffer
         self._buffer = ""
         return text
+
+    def _requeue(self, text: str) -> None:
+        """Put un-sent text back at the head of the buffer.
+
+        The buffer is consumed *before* the send is awaited, so a failure or a
+        cancellation mid-send would otherwise drop the text with no trace.
+        """
+        if not text:
+            return
+        self._buffer = f"{text}{self._joiner}{self._buffer}" if self._buffer else text
+
+    async def _deliver(self, text: str, *, reason: str) -> None:
+        """Send ``text``, keeping it recoverable if the send does not complete.
+
+        A cancellation here is not benign: ``append`` cancels the pending idle
+        task on every new message, and that task may already be inside the
+        send. Re-queue the text and log it, so an interrupted send is visible
+        and retried on the next flush instead of vanishing silently.
+        """
+        try:
+            await self._send_text(text)
+        except asyncio.CancelledError:
+            self._requeue(text)
+            logger.warning(
+                "SeaTalk coalescer send cancelled mid-flight (reason=%s, %d chars); "
+                "text re-queued for the next flush",
+                reason,
+                len(text),
+            )
+            raise
+        except Exception:
+            self._requeue(text)
+            logger.exception(
+                "SeaTalk coalescer send failed (reason=%s, %d chars); text re-queued",
+                reason,
+                len(text),
+            )
+            raise
 
     async def _send_text(self, text: str) -> None:
         async with self._send_lock:
@@ -95,11 +133,18 @@ class OutboundCoalescer:
                 await self.flush()
         except asyncio.CancelledError:
             raise
+        except Exception:
+            # Nothing awaits this task, so an escaping exception would only
+            # surface as "Task exception was never retrieved" (or not at all,
+            # depending on the asyncio handler). Log it here instead.
+            logger.exception("SeaTalk coalescer idle flush failed")
 
     def _cancel_idle_task(self) -> None:
-        if self._idle_task and not self._idle_task.done():
-            self._idle_task.cancel()
+        task = self._idle_task
         self._idle_task = None
+        if task is None or task.done():
+            return
+        task.cancel()
 
 
 class OutboundCoalescerMap:
