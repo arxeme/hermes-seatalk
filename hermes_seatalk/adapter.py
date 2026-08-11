@@ -719,22 +719,21 @@ class SeaTalkAdapter(BasePlatformAdapter):
             if should_coalesce:
                 runtime.coalescers.append(target.chat_id, target.thread_id, content)
                 # NOTE: success here means "accepted into the outbound buffer",
-                # not "delivered". The real send happens up to
-                # outbound_coalescing_idle_seconds later. Callers that need a
-                # delivery guarantee must pass metadata {"_skip_coalescing":
-                # True} to send synchronously. ``delivered: False`` marks the
-                # distinction so a caller's delivery ledger can tell the two
-                # apart instead of recording a queue ack as a send.
+                # not "delivered" — the real send happens up to
+                # outbound_coalescing_idle_seconds later, after this returns.
+                # Callers that need a delivery guarantee must send
+                # synchronously via metadata {"_skip_coalescing": True}.
+                # Distinguishing the two in SendResult would take a first-class
+                # field that gateway/delivery_ledger.py honours; it keys off
+                # ``success`` alone today, so a marker in raw_response would
+                # have no consumer.
                 logger.debug(
                     "SeaTalk send queued for coalescing: chat_id=%s thread_id=%s chars=%d",
                     target.chat_id,
                     target.thread_id,
                     len(content),
                 )
-                return SendResult(
-                    success=True,
-                    raw_response={"queued": True, "delivered": False},
-                )
+                return SendResult(success=True, raw_response={"queued": True})
             return await self._send_text_now_for_client(
                 runtime.client, target.chat_id, content, target.thread_id, runtime.config.text_format
             )
