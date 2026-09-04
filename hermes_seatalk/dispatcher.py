@@ -13,6 +13,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
+from .clarify_card import SeaTalkClarifyCard, decode_clarify_value
+
 try:
     from gateway.config import Platform
     from gateway.platforms.base import (
@@ -79,6 +81,7 @@ SUPPORTED_MESSAGE_EVENTS = {
     "new_mentioned_message_received_from_group_chat",
     "new_message_received_from_thread",
 }
+INTERACTIVE_CLICK_EVENT = "interactive_message_click"
 LOG_ONLY_EVENTS = {
     "new_bot_subscriber",
     "bot_added_to_group_chat",
@@ -177,6 +180,13 @@ class SeaTalkEventDispatcher:
         if event_type in LOG_ONLY_EVENTS:
             logger.info("SeaTalk log-only event: %s", event_type)
             return
+        if event_type == INTERACTIVE_CLICK_EVENT:
+            dedup_key = self._dedup_key(payload)
+            if not self._record_event(dedup_key):
+                logger.info("SeaTalk duplicate event dropped: %s", dedup_key)
+                return
+            await self._handle_interactive_click(payload)
+            return
         if event_type not in SUPPORTED_MESSAGE_EVENTS:
             logger.info("SeaTalk unknown event type: %s", event_type or "<missing>")
             return
@@ -207,6 +217,57 @@ class SeaTalkEventDispatcher:
         """Flush all pending debounce buffers."""
         for key in list(self._buffers):
             await self._flush_key(key)
+
+    async def _handle_interactive_click(self, payload: dict[str, Any]) -> None:
+        event = payload.get("event")
+        if not isinstance(event, dict):
+            logger.info("SeaTalk malformed interactive click: reason=missing_event")
+            return
+        decoded = decode_clarify_value(event.get("value"))
+        if decoded is None:
+            logger.info("SeaTalk interactive click ignored: unrecognized value")
+            return
+        clarify_id, index = decoded
+        employee_code = _str_or_none(event.get("employee_code"))
+        message_id = _str_or_none(event.get("message_id"))
+        if not employee_code or not message_id:
+            logger.info(
+                "SeaTalk malformed interactive click: reason=missing_sender_or_message_id"
+            )
+            return
+        email = _normalize_email(event.get("email"))
+        group_id = _str_or_none(event.get("group_id"))
+        if not self._click_sender_allowed(employee_code, email, group_id):
+            return
+        handler = getattr(self.adapter, "handle_clarify_click", None)
+        if handler is None:
+            logger.info("SeaTalk interactive click ignored: adapter has no clarify handler")
+            return
+        await handler(
+            clarify_id=clarify_id,
+            index=index,
+            card=SeaTalkClarifyCard(
+                message_id=message_id,
+                chat_id=f"group/{group_id}" if group_id else employee_code,
+                thread_id=_str_or_none(event.get("thread_id")),
+                account_id=self.account_id,
+            ),
+        )
+
+    def _click_sender_allowed(
+        self,
+        employee_code: str,
+        email: str | None,
+        group_id: str | None,
+    ) -> bool:
+        if not group_id:
+            if not self._dm_sender_allowed(employee_code, email):
+                logger.warning("SeaTalk click rejected: reason=dm_sender_not_allowed")
+                return False
+            return True
+        return self._group_allowed(group_id, event="click") and self._group_sender_allowed(
+            group_id, employee_code, email, event="click"
+        )
 
     def _dedup_key(self, payload: dict[str, Any]) -> str:
         app_id = str(payload.get("app_id") or self.app_id or "")
@@ -319,24 +380,14 @@ class SeaTalkEventDispatcher:
             return None
 
         chat_id = f"group/{group_id}"
-        if self._group_policy == "disabled":
-            logger.warning("SeaTalk group rejected: channel=%s reason=groups_disabled", chat_id)
+        if not self._group_allowed(group_id, event="group"):
             return None
-        if self._group_policy == "allowlist" and group_id not in self._group_allowlist:
-            logger.warning("SeaTalk group rejected: channel=%s reason=group_not_allowed", chat_id)
-            return None
-
         employee_code = _str_or_none(sender.get("employee_code"))
         if not employee_code:
             logger.info("SeaTalk malformed group sender dropped")
             return None
         email = _normalize_email(sender.get("email"))
-        if self._group_sender_allowlist and not _sender_in_allowlist(
-            employee_code,
-            email,
-            self._group_sender_allowlist,
-        ):
-            logger.warning("SeaTalk group rejected: channel=%s reason=sender_not_allowed", chat_id)
+        if not self._group_sender_allowed(group_id, employee_code, email, event="group"):
             return None
         message_id = _str_or_none(message.get("message_id")) or _str_or_none(payload.get("event_id"))
         thread_id = _str_or_none(message.get("thread_id"))
@@ -636,6 +687,35 @@ class SeaTalkEventDispatcher:
         if self._dm_policy == "open":
             return True
         return _sender_in_allowlist(employee_code, email, self._allowlist)
+
+    def _group_allowed(self, group_id: str, *, event: str) -> bool:
+        chat_id = f"group/{group_id}"
+        if self._group_policy == "disabled":
+            logger.warning("SeaTalk %s rejected: channel=%s reason=groups_disabled", event, chat_id)
+            return False
+        if self._group_policy == "allowlist" and group_id not in self._group_allowlist:
+            logger.warning("SeaTalk %s rejected: channel=%s reason=group_not_allowed", event, chat_id)
+            return False
+        return True
+
+    def _group_sender_allowed(
+        self,
+        group_id: str,
+        employee_code: str,
+        email: str | None,
+        *,
+        event: str,
+    ) -> bool:
+        if self._group_sender_allowlist and not _sender_in_allowlist(
+            employee_code,
+            email,
+            self._group_sender_allowlist,
+        ):
+            logger.warning(
+                "SeaTalk %s rejected: channel=group/%s reason=sender_not_allowed", event, group_id
+            )
+            return False
+        return True
 
 
 def _seatalk_platform() -> Any:
