@@ -168,8 +168,7 @@ def test_t13_05_websocket_mode_config_defaults():
     )
     assert config.mode == "websocket"
     assert config.ws_url == DEFAULT_WEBSOCKET_URL
-    # Default outbound format is Markdown (2) per product decision.
-    assert config.text_format == 2
+    assert config.text_format == 1
 
 
 def test_t13_06_websocket_custom_ws_url_and_text_format():
