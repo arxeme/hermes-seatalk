@@ -165,9 +165,9 @@ For webhook and relay modes, configure the SeaTalk Bot App callback URL to point
 at the externally reachable endpoint, usually through a reverse proxy or tunnel
 that terminates TLS.
 
-`text_format` controls outbound text rendering: `2` (default) sends Markdown as
-rich text (bold, italics, lists, code blocks); `1` sends plain text. This
-applies to all modes.
+`text_format` controls outbound text rendering: `1` (default) sends Markdown as
+rich text (bold, italics, lists, code blocks); `2` sends plain text. The value is
+SeaTalk's own `format` field. This applies to all modes.
 
 `dm_policy` controls direct messages. With the default `allowlist`, `allow_from`
 must match the SeaTalk sender email or employee code. `open` allows all direct
@@ -181,6 +181,14 @@ which users may trigger Hermes inside those groups. Leaving
 `group_sender_allow_from` empty means every sender in the allowed groups can
 trigger Hermes, so keep it populated when groups are open but users must remain
 restricted.
+
+When the agent asks a single-select question with its `clarify` tool, it is
+delivered as an interactive card with one button per choice plus `Other…`;
+multi-select and open-ended questions, more than four choices, or an over-long
+prompt stay a numbered text list. Either way the question can also be answered
+by typing. Tapping a choice retires the card into a checklist; a question
+answered by typing or left to expire keeps its buttons until someone taps one.
+Clicks follow the same `dm_policy` and `group_policy` rules as inbound messages.
 
 SeaTalk sender email is preferred as `user_id`; when email is unavailable,
 employee code is preserved as the fallback identity. SeaTalk policy is enforced

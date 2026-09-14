@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from pathlib import Path
 
@@ -264,3 +265,23 @@ async def test_t02_08_remember_employee_email_seeds_lookup_cache():
     result = await client.get_employee_code_by_email(["alice@example.com"])
 
     assert result == {"alice@example.com": "EmpABC"}
+
+@pytest.mark.asyncio
+async def test_t02_09_token_refresh_survives_a_cancelled_caller():
+    client = SeaTalkOpenAPIClient("app-id", "app-secret")
+    started = asyncio.Event()
+
+    async def slow_fetch():
+        started.set()
+        await asyncio.sleep(0.3)
+        return SeaTalkTokenInfo(token="tok", expire_at=1 << 31)
+
+    client._fetch_token = slow_fetch  # type: ignore[method-assign]
+    follower = asyncio.ensure_future(client.refresh_token())
+    await started.wait()
+
+    with pytest.raises(TimeoutError):
+        await asyncio.wait_for(client.refresh_token(), 0.05)
+
+    # The cancelled caller must not take the shared fetch down with it.
+    assert (await follower).token == "tok"

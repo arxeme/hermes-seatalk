@@ -95,6 +95,10 @@ def build_text_message(content: str, fmt: int = 1) -> dict[str, Any]:
     return {"tag": "text", "text": {"format": fmt, "content": content}}
 
 
+def build_interactive_message(elements: list[dict[str, Any]]) -> dict[str, Any]:
+    return {"tag": "interactive_message", "interactive_message": {"elements": elements}}
+
+
 def build_image_message(base64_content: str) -> dict[str, Any]:
     return {"tag": "image", "image": {"content": base64_content}}
 
@@ -190,12 +194,12 @@ class SeaTalkOpenAPIClient:
 
     async def refresh_token(self) -> SeaTalkTokenInfo:
         if self._token_task is not None:
-            return await self._token_task
+            return await asyncio.shield(self._token_task)
 
         task = asyncio.create_task(self._fetch_token())
         self._token_task = task
         try:
-            info = await task
+            info = await asyncio.shield(task)
             self._token_info = info
             return info
         finally:
@@ -595,6 +599,13 @@ class SeaTalkOpenAPIClient:
         return await self.api_call(
             "GET",
             f"/messaging/v2/get_message_by_message_id?{urlencode({'message_id': message_id})}",
+        )
+
+    async def update_message(self, message_id: str, message: dict[str, Any]) -> dict[str, Any]:
+        return await self.api_call(
+            "POST",
+            "/messaging/v2/update",
+            {"message_id": message_id, "message": message},
         )
 
     async def download_media(self, url: str) -> tuple[bytes, str]:
