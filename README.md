@@ -253,14 +253,21 @@ Actions not listed stay enabled.
 
 ## Publishing
 
-The repository publishes installable runtime content through the `publish`
-branch. `scripts/publish-release.sh` keeps that branch limited to plugin runtime
-files and README content; it does not publish docs, tests, deploy helpers, or
-local configuration.
+The `publish` branch is what `hermes plugins install arxeme/hermes-seatalk`
+installs. A release is an annotated `vYYYY.M.D-rc` tag on `main` whose message
+is the release note:
 
 ```bash
-./scripts/publish-release.sh --tag v1.0.0 --message "publish: release v1.0.0 runtime"
+git tag -a v2026.9.14-rc -m "publish: release v2026.9.14 runtime plugin" -m "- Summarize each change users receive"
+git push origin refs/tags/v2026.9.14-rc
 ```
+
+Pushing the tag runs the `publish` workflow: it runs the unit tests, rebuilds
+the `publish` branch from the tag with `scripts/publish-release.sh --rc-tag`
+(plugin runtime files, the bundled SeaTalk SDK package, and README; no docs,
+tests, deploy helpers, or local configuration), reuses the tag message as the
+publish commit message, and tags the published commit `vYYYY.M.D`. A second
+release on the same day moves that version tag.
 
 ## Status And Troubleshooting
 

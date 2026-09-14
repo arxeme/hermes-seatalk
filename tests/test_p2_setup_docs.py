@@ -293,20 +293,30 @@ def test_t2_08_07_to_09_readme_accounts_and_group_format():
 
 def test_t2_08_10_publish_branch_content():
     script = Path("scripts/publish-release.sh").read_text(encoding="utf-8")
+    workflow = Path(".github/workflows/publish.yml").read_text(encoding="utf-8")
 
     assert "RELEASE_BRANCH=\"publish\"" in script
-    assert "README.md" in script
-    assert "hermes_seatalk" in script
-    assert "pyproject.toml" in script
+    assert "--rc-tag <vYYYY.M.D-rc>" in script
     assert "--tag <version-tag>" in script
     assert "--message <commit-message>" in script
-    assert "COMMIT_MESSAGE" in script
+    assert "Source: main@${SOURCE_SHORT}" in script
     assert "git -C \"$TMP_WORKTREE\" commit -q -m \"$COMMIT_MSG\"" in script
-    assert "no docs/, tests/, scripts/, deploy/" in script
-    release_paths = script[script.index("RELEASE_PATHS=(") : script.index("RELEASE_BRANCH=")]
-    assert "docs" not in release_paths
-    assert "tests" not in release_paths
-    assert "deploy" not in release_paths
+    release_start = script.index("RELEASE_PATHS=(")
+    release_paths = script[release_start : script.index(")", release_start)]
+    dev_start = script.index("DEV_PATHS=(")
+    dev_paths = script[dev_start : script.index(")", dev_start)]
+    for shipped in (
+        "hermes_seatalk",
+        "ref/seatalk-oapi/seatalk-oapi-sdk-py/seatalk_oapi_sdk",
+        "pyproject.toml",
+        "README.md",
+    ):
+        assert shipped in release_paths
+    for kept_out in ("docs", "tests", "deploy", "scripts", ".github"):
+        assert kept_out not in release_paths
+        assert kept_out in dev_paths
+    assert 'tags:\n      - "v*-rc"' in workflow
+    assert 'scripts/publish-release.sh --rc-tag "${GITHUB_REF_NAME}"' in workflow
 
 
 def test_t2_08_11_deploy_does_not_overwrite_config_yaml_by_default():

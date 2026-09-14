@@ -1,0 +1,53 @@
+name: publish
+
+# Releases are driven by an annotated vYYYY.M.D-rc tag on main whose message is
+# the release note. This rebuilds the publish branch (the branch users install
+# from) and tags the published commit vYYYY.M.D.
+on:
+  push:
+    tags:
+      - "v*-rc"
+
+permissions:
+  contents: write
+
+concurrency: publish
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Restore the annotated tag
+        # actions/checkout rewrites the pushed tag as a lightweight tag at the
+        # commit, dropping the message this release is built from.
+        run: git fetch --force origin "refs/tags/${GITHUB_REF_NAME}:refs/tags/${GITHUB_REF_NAME}"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install test dependencies
+        run: pip install -r requirements.txt pytest pytest-asyncio
+
+      - name: Run unit tests
+        run: python -m pytest -q
+
+      - name: Commit as the releaser
+        run: |
+          name="$(git for-each-ref "refs/tags/${GITHUB_REF_NAME}" --format='%(taggername)')"
+          email="$(git for-each-ref "refs/tags/${GITHUB_REF_NAME}" --format='%(taggeremail:trim)')"
+          git config user.name "${name:-github-actions[bot]}"
+          git config user.email "${email:-41898282+github-actions[bot]@users.noreply.github.com}"
+
+      - name: Build the publish branch
+        run: scripts/publish-release.sh --rc-tag "${GITHUB_REF_NAME}"
+
+      - name: Push the release
+        run: |
+          git push origin publish
+          # Dates repeat: a second release on the same day moves the version tag.
+          git push --force origin "refs/tags/${GITHUB_REF_NAME%-rc}"
