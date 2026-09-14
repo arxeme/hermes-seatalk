@@ -284,7 +284,7 @@ async def _do_send(
     if denied:
         return json.dumps({"error": denied})
 
-    text_format = int(getattr(account, "text_format", 2) or 2)
+    text_format = int(getattr(account, "text_format", 1) or 1)
     sent: list[dict[str, Any]] = []
     if text:
         response = await _send_payload(client, target, build_text_message(text, text_format))

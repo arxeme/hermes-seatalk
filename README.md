@@ -165,9 +165,9 @@ For webhook and relay modes, configure the SeaTalk Bot App callback URL to point
 at the externally reachable endpoint, usually through a reverse proxy or tunnel
 that terminates TLS.
 
-`text_format` controls outbound text rendering: `2` (default) sends Markdown as
-rich text (bold, italics, lists, code blocks); `1` sends plain text. This
-applies to all modes.
+`text_format` controls outbound text rendering: `1` (default) sends Markdown as
+rich text (bold, italics, lists, code blocks); `2` sends plain text. The value is
+SeaTalk's own `format` field. This applies to all modes.
 
 `dm_policy` controls direct messages. With the default `allowlist`, `allow_from`
 must match the SeaTalk sender email or employee code. `open` allows all direct
@@ -181,6 +181,14 @@ which users may trigger Hermes inside those groups. Leaving
 `group_sender_allow_from` empty means every sender in the allowed groups can
 trigger Hermes, so keep it populated when groups are open but users must remain
 restricted.
+
+When the agent asks a single-select question with its `clarify` tool, it is
+delivered as an interactive card with one button per choice plus `Other…`;
+multi-select and open-ended questions, more than four choices, or an over-long
+prompt stay a numbered text list. Either way the question can also be answered
+by typing. Tapping a choice retires the card into a checklist; a question
+answered by typing or left to expire keeps its buttons until someone taps one.
+Clicks follow the same `dm_policy` and `group_policy` rules as inbound messages.
 
 SeaTalk sender email is preferred as `user_id`; when email is unavailable,
 employee code is preserved as the fallback identity. SeaTalk policy is enforced
@@ -245,14 +253,21 @@ Actions not listed stay enabled.
 
 ## Publishing
 
-The repository publishes installable runtime content through the `publish`
-branch. `scripts/publish-release.sh` keeps that branch limited to plugin runtime
-files and README content; it does not publish docs, tests, deploy helpers, or
-local configuration.
+The `publish` branch is what `hermes plugins install arxeme/hermes-seatalk`
+installs. A release is an annotated `vYYYY.M.D-rc` tag on `main` whose message
+is the release note:
 
 ```bash
-./scripts/publish-release.sh --tag v1.0.0 --message "publish: release v1.0.0 runtime"
+git tag -a v2026.9.14-rc -m "publish: release v2026.9.14 runtime plugin" -m "- Summarize each change users receive"
+git push origin refs/tags/v2026.9.14-rc
 ```
+
+Pushing the tag runs the `publish` workflow: it runs the unit tests, rebuilds
+the `publish` branch from the tag with `scripts/publish-release.sh --rc-tag`
+(plugin runtime files, the bundled SeaTalk SDK package, and README; no docs,
+tests, deploy helpers, or local configuration), reuses the tag message as the
+publish commit message, and tags the published commit `vYYYY.M.D`. A second
+release on the same day moves that version tag.
 
 ## Status And Troubleshooting
 
