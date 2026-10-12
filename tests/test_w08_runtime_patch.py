@@ -9,25 +9,13 @@ import pytest
 
 pytest.importorskip("gateway", reason="requires Hermes gateway")
 
-from gateway.config import HomeChannel, Platform  # noqa: E402
+from gateway.config import HomeChannel  # noqa: E402
 from gateway.platform_registry import PlatformEntry, platform_registry  # noqa: E402
 from gateway.platforms.base import SendResult  # noqa: E402
 
 from hermes_seatalk import adapter as seatalk_adapter  # noqa: E402
 
 pytestmark = pytest.mark.requires_hermes
-
-
-def _register_platform_entry():
-    platform_registry.register(PlatformEntry(
-        name="seatalk",
-        label="SeaTalk",
-        adapter_factory=lambda cfg: seatalk_adapter.SeaTalkAdapter(cfg),
-        check_fn=lambda: True,
-        max_message_length=4000,
-        allowed_users_env="HERMES_SEATALK_ALLOWED_USERS",
-    ))
-    return Platform("seatalk")
 
 
 class FakeRuntimeAdapter:
@@ -47,20 +35,18 @@ class FakeRuntimeAdapter:
         return SendResult(success=True, message_id=f"m-{len(self.calls)}")
 
 
-def test_t08_08_target_parser_full_formats(monkeypatch):
-    import tools.send_message_tool as send_message_tool
+def test_t08_08_target_parser_full_formats(seatalk_platform):
+    from tools.send_message_targets import resolve_send_target
 
-    original = getattr(send_message_tool._parse_target_ref, "_seatalk_original", send_message_tool._parse_target_ref)
-    monkeypatch.setattr(send_message_tool, "_parse_target_ref", original)
-    seatalk_adapter._patch_send_message_tool()
+    def resolve(target_ref):
+        return resolve_send_target("seatalk", target_ref)
 
-    parse = send_message_tool._parse_target_ref
-    assert parse("seatalk", "EmpABC") == ("EmpABC", None, True)
-    assert parse("seatalk", "Alice@Example.com") == ("alice@example.com", None, True)
-    assert parse("seatalk", "group/GroupABC") == ("group/GroupABC", None, True)
-    assert parse("seatalk", "alice@example.com:ThreadXYZ") == ("alice@example.com", "ThreadXYZ", True)
-    assert parse("seatalk", "EmpABC:ThreadXYZ") == ("EmpABC", "ThreadXYZ", True)
-    assert parse("seatalk", "group/GroupABC:ThreadXYZ") == ("group/GroupABC", "ThreadXYZ", True)
+    assert resolve("EmpABC") == ("EmpABC", None, None)
+    assert resolve("Alice@Example.com") == ("alice@example.com", None, None)
+    assert resolve("group/GroupABC") == ("group/GroupABC", None, None)
+    assert resolve("alice@example.com:ThreadXYZ") == ("alice@example.com", "ThreadXYZ", None)
+    assert resolve("EmpABC:ThreadXYZ") == ("EmpABC", "ThreadXYZ", None)
+    assert resolve("group/GroupABC:ThreadXYZ") == ("group/GroupABC", "ThreadXYZ", None)
 
 
 def test_t08_03_env_enablement_home_channel(monkeypatch):
@@ -123,15 +109,14 @@ def test_t08_10_env_enablement_registered_on_platform_entry():
 
 
 @pytest.mark.asyncio
-async def test_t08_02_send_to_platform_supports_seatalk(monkeypatch, tmp_path):
+async def test_t08_02_send_to_platform_supports_seatalk(monkeypatch, tmp_path, seatalk_platform):
     import gateway.run as gateway_run
 
-    platform = _register_platform_entry()
     runtime_adapter = FakeRuntimeAdapter()
     monkeypatch.setattr(
         gateway_run,
         "_gateway_runner_ref",
-        lambda: SimpleNamespace(adapters={platform: runtime_adapter}),
+        lambda: SimpleNamespace(adapters={seatalk_platform: runtime_adapter}),
     )
     image = tmp_path / "photo.png"
     image.write_bytes(b"image")
@@ -139,7 +124,7 @@ async def test_t08_02_send_to_platform_supports_seatalk(monkeypatch, tmp_path):
     document.write_text("document")
 
     result = await seatalk_adapter._seatalk_send_to_platform(
-        platform,
+        seatalk_platform,
         "group/GroupABC",
         "hello",
         thread_id="ThreadXYZ",
@@ -157,27 +142,20 @@ async def test_t08_02_send_to_platform_supports_seatalk(monkeypatch, tmp_path):
     assert runtime_adapter.calls[2][0] == "document"
 
 
-def test_t08_01_send_message_supports_seatalk(monkeypatch):
+def test_t08_01_send_message_supports_seatalk(monkeypatch, seatalk_platform):
     import gateway.config as gateway_config
     import gateway.run as gateway_run
     import tools.send_message_tool as send_message_tool
 
-    platform = _register_platform_entry()
-    original_parse = getattr(send_message_tool._parse_target_ref, "_seatalk_original", send_message_tool._parse_target_ref)
-    original_send = getattr(send_message_tool._send_to_platform, "_seatalk_original", send_message_tool._send_to_platform)
-    monkeypatch.setattr(send_message_tool, "_parse_target_ref", original_parse)
-    monkeypatch.setattr(send_message_tool, "_send_to_platform", original_send)
-    seatalk_adapter._patch_send_message_tool()
-    seatalk_adapter._patch_send_to_platform()
 
     runtime_adapter = FakeRuntimeAdapter()
     monkeypatch.setattr(
         gateway_run,
         "_gateway_runner_ref",
-        lambda: SimpleNamespace(adapters={platform: runtime_adapter}),
+        lambda: SimpleNamespace(adapters={seatalk_platform: runtime_adapter}),
     )
     fake_config = SimpleNamespace(
-        platforms={platform: SimpleNamespace(enabled=True, extra={})},
+        platforms={seatalk_platform: SimpleNamespace(enabled=True, extra={})},
         get_home_channel=lambda requested: HomeChannel(
             platform=requested,
             chat_id="group/Home",
@@ -198,24 +176,20 @@ def test_t08_01_send_message_supports_seatalk(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_t08_11_send_to_platform_accepts_force_document(monkeypatch):
+async def test_t08_11_send_to_platform_accepts_force_document(monkeypatch, seatalk_platform):
     import gateway.run as gateway_run
     import tools.send_message_tool as send_message_tool
 
-    platform = _register_platform_entry()
-    original_send = getattr(send_message_tool._send_to_platform, "_seatalk_original", send_message_tool._send_to_platform)
-    monkeypatch.setattr(send_message_tool, "_send_to_platform", original_send)
-    seatalk_adapter._patch_send_to_platform()
 
     runtime_adapter = FakeRuntimeAdapter()
     monkeypatch.setattr(
         gateway_run,
         "_gateway_runner_ref",
-        lambda: SimpleNamespace(adapters={platform: runtime_adapter}),
+        lambda: SimpleNamespace(adapters={seatalk_platform: runtime_adapter}),
     )
 
     result = await send_message_tool._send_to_platform(
-        platform,
+        seatalk_platform,
         SimpleNamespace(extra={}),
         "group/Home",
         "hello",
@@ -227,23 +201,22 @@ async def test_t08_11_send_to_platform_accepts_force_document(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_t08_11b_force_document_routes_images_via_send_document(monkeypatch, tmp_path):
+async def test_t08_11b_force_document_routes_images_via_send_document(monkeypatch, tmp_path, seatalk_platform):
     """force_document=True must override image-extension routing so SeaTalk
     receives the file via send_document (preserves quality / file name)."""
     import gateway.run as gateway_run
 
-    platform = _register_platform_entry()
     runtime_adapter = FakeRuntimeAdapter()
     monkeypatch.setattr(
         gateway_run,
         "_gateway_runner_ref",
-        lambda: SimpleNamespace(adapters={platform: runtime_adapter}),
+        lambda: SimpleNamespace(adapters={seatalk_platform: runtime_adapter}),
     )
     image = tmp_path / "photo.png"
     image.write_bytes(b"image")
 
     result = await seatalk_adapter._seatalk_send_to_platform(
-        platform,
+        seatalk_platform,
         "group/GroupABC",
         "",
         media_files=[(str(image), False)],
@@ -258,23 +231,22 @@ async def test_t08_11b_force_document_routes_images_via_send_document(monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_t08_11c_default_still_routes_images_via_send_image_file(monkeypatch, tmp_path):
+async def test_t08_11c_default_still_routes_images_via_send_image_file(monkeypatch, tmp_path, seatalk_platform):
     """Sanity: without force_document, image-extension files still go through
     send_image_file (we did not regress the default behavior)."""
     import gateway.run as gateway_run
 
-    platform = _register_platform_entry()
     runtime_adapter = FakeRuntimeAdapter()
     monkeypatch.setattr(
         gateway_run,
         "_gateway_runner_ref",
-        lambda: SimpleNamespace(adapters={platform: runtime_adapter}),
+        lambda: SimpleNamespace(adapters={seatalk_platform: runtime_adapter}),
     )
     image = tmp_path / "photo.png"
     image.write_bytes(b"image")
 
     await seatalk_adapter._seatalk_send_to_platform(
-        platform,
+        seatalk_platform,
         "group/GroupABC",
         "",
         media_files=[(str(image), False)],
@@ -284,7 +256,7 @@ async def test_t08_11c_default_still_routes_images_via_send_image_file(monkeypat
 
 
 @pytest.mark.asyncio
-async def test_t08_12_send_to_platform_uses_gateway_loop(monkeypatch):
+async def test_t08_12_send_to_platform_uses_gateway_loop(monkeypatch, seatalk_platform):
     import gateway.run as gateway_run
 
     class LoopCapturingRuntimeAdapter(FakeRuntimeAdapter):
@@ -292,7 +264,6 @@ async def test_t08_12_send_to_platform_uses_gateway_loop(monkeypatch):
             self.calls.append(("text", chat_id, content, metadata, asyncio.get_running_loop()))
             return SendResult(success=True, message_id=f"m-{len(self.calls)}")
 
-    platform = _register_platform_entry()
     runtime_adapter = LoopCapturingRuntimeAdapter()
     gateway_loop = asyncio.new_event_loop()
     ready = threading.Event()
@@ -309,10 +280,10 @@ async def test_t08_12_send_to_platform_uses_gateway_loop(monkeypatch):
         monkeypatch.setattr(
             gateway_run,
             "_gateway_runner_ref",
-            lambda: SimpleNamespace(adapters={platform: runtime_adapter}, _gateway_loop=gateway_loop),
+            lambda: SimpleNamespace(adapters={seatalk_platform: runtime_adapter}, _gateway_loop=gateway_loop),
         )
 
-        result = await seatalk_adapter._seatalk_send_to_platform(platform, "EmpABC", "hello")
+        result = await seatalk_adapter._seatalk_send_to_platform(seatalk_platform, "EmpABC", "hello")
 
         assert result == {"success": True, "message_id": "m-1"}
         assert runtime_adapter.calls == [
@@ -327,10 +298,10 @@ async def test_t08_12_send_to_platform_uses_gateway_loop(monkeypatch):
 def test_t08_05_cron_target(monkeypatch):
     """SeaTalk's cron_deliver_env_var declaration lets the cron scheduler
     resolve seatalk targets without monkey-patching scheduler internals."""
-    import cron.scheduler as scheduler
+    import cron.scheduler_delivery as delivery
 
-    monkeypatch.setattr(scheduler, "_KNOWN_DELIVERY_PLATFORMS", frozenset({"telegram"}))
-    monkeypatch.setattr(scheduler, "_HOME_TARGET_ENV_VARS", {"telegram": "TELEGRAM_HOME_CHANNEL"})
+    monkeypatch.setattr(delivery, "_KNOWN_DELIVERY_PLATFORMS", frozenset({"telegram"}))
+    monkeypatch.setattr(delivery, "_HOME_TARGET_ENV_VARS", {"telegram": "TELEGRAM_HOME_CHANNEL"})
     monkeypatch.setenv("SEATALK_HOME_CHANNEL", "group/Home")
 
     platform_registry.register(PlatformEntry(
@@ -341,8 +312,9 @@ def test_t08_05_cron_target(monkeypatch):
         cron_deliver_env_var="SEATALK_HOME_CHANNEL",
     ))
 
-    assert scheduler._is_known_delivery_platform("seatalk") is True
-    assert scheduler._resolve_single_delivery_target({}, "seatalk") == {
+    assert delivery._is_known_delivery_platform("seatalk") is True
+    resolved = delivery._resolve_single_delivery_target({}, "seatalk")
+    assert {key: resolved[key] for key in ("platform", "chat_id", "thread_id")} == {
         "platform": "seatalk",
         "chat_id": "group/Home",
         "thread_id": None,
@@ -352,36 +324,11 @@ def test_t08_05_cron_target(monkeypatch):
 def test_t08_06_patch_idempotent(monkeypatch):
     import tools.send_message_tool as send_message_tool
 
-    original_parse = getattr(send_message_tool._parse_target_ref, "_seatalk_original", send_message_tool._parse_target_ref)
     original_send = getattr(send_message_tool._send_to_platform, "_seatalk_original", send_message_tool._send_to_platform)
-    monkeypatch.setattr(send_message_tool, "_parse_target_ref", original_parse)
     monkeypatch.setattr(send_message_tool, "_send_to_platform", original_send)
 
-    seatalk_adapter._patch_send_message_tool()
     seatalk_adapter._patch_send_to_platform()
-    once = (
-        send_message_tool._parse_target_ref,
-        send_message_tool._send_to_platform,
-    )
-    seatalk_adapter._patch_send_message_tool()
+    once = send_message_tool._send_to_platform
     seatalk_adapter._patch_send_to_platform()
 
-    assert once == (
-        send_message_tool._parse_target_ref,
-        send_message_tool._send_to_platform,
-    )
-
-
-def test_t08_07_builtin_platform_regression(monkeypatch):
-    import tools.send_message_tool as send_message_tool
-
-    original = getattr(send_message_tool._parse_target_ref, "_seatalk_original", send_message_tool._parse_target_ref)
-    monkeypatch.setattr(send_message_tool, "_parse_target_ref", original)
-    seatalk_adapter._patch_send_message_tool()
-
-    assert send_message_tool._parse_target_ref("slack", "C12345678") == ("C12345678", None, True)
-    assert send_message_tool._parse_target_ref("discord", "123456789:987654321") == (
-        "123456789",
-        "987654321",
-        True,
-    )
+    assert once is send_message_tool._send_to_platform

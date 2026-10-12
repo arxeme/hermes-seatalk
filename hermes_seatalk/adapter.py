@@ -88,10 +88,7 @@ MAX_MESSAGE_LENGTH = 4000
 OUTBOUND_COALESCING_IDLE_SECONDS = 1.0
 ACCOUNT_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_.-]*$")
 
-CLARIFY_CLAIMED_MAX = 1000
-# Under the clarify callback's own wait in gateway.run, which clears the entry on
-# expiry; anything delivered after that lands against a question nobody can answer.
-CLARIFY_SEND_TIMEOUT_SECONDS = 12.0
+CLARIFY_TABLE_MAX = 1000
 CLARIFY_ERROR_REPLY = "Could not submit this answer."
 CLARIFY_OTHER_REPLY = "Reply with your own answer."
 CLARIFY_CLOSED_REPLY = "This question is no longer open."
@@ -232,24 +229,18 @@ def _clarify_entry(clarify_id: str) -> Any:
         return None
 
 
-def _arm_clarify_text_capture(clarify_id: str) -> None:
-    """Without this a reply that is neither a number nor an exact option label is
-    refused by clarify_gateway and queued behind the blocked agent instead.
-    """
-    try:
-        from tools import clarify_gateway as clarify_mod
-
-        clarify_mod.mark_awaiting_text(clarify_id)
-    except Exception:
-        logger.warning("SeaTalk clarify text capture not armed", exc_info=True)
-
-
 def _clarify_choice_label(clarify_id: str, index: int) -> str:
     entry = _clarify_entry(clarify_id)
     choices = getattr(entry, "choices", None) if entry else None
     if choices and 0 <= index < len(choices):
         return str(choices[index])
     return f"choice {index + 1}"
+
+
+def _put_bounded(table: OrderedDict[Any, Any], key: Any, value: Any) -> None:
+    table[key] = value
+    while len(table) > CLARIFY_TABLE_MAX:
+        table.popitem(last=False)
 
 
 def _account_qualified_target(account_id: str | None, chat_id: str) -> str:
@@ -497,6 +488,7 @@ class SeaTalkAdapter(BasePlatformAdapter):
         }
         self._default_account_id = self._select_default_account_id()
         self._clarify_claimed: OrderedDict[tuple[str | None, str], None] = OrderedDict()
+        self._clarify_cards: OrderedDict[str, SeaTalkClarifyCard] = OrderedDict()
 
     def _select_default_account_id(self) -> str:
         if not self._runtimes:
@@ -807,7 +799,8 @@ class SeaTalkAdapter(BasePlatformAdapter):
         session_key: str,
         metadata: dict[str, Any] | None = None,
     ) -> SendResult:
-        """Render a single-select clarify as a SeaTalk card."""
+        """Render a single-select clarify as a SeaTalk card; when the card fails,
+        the gateway asks with its numbered-text prompt."""
         entry = _clarify_entry(clarify_id)
         elements = (
             None
@@ -818,51 +811,54 @@ class SeaTalkAdapter(BasePlatformAdapter):
                 clarify_id=clarify_id,
             )
         )
-        try:
-            async with asyncio.timeout(CLARIFY_SEND_TIMEOUT_SECONDS):
-                if elements is not None:
-                    try:
-                        target = await self._resolve_target(chat_id, metadata)
-                        runtime = self._runtime_for_target(target)
-                        response = await self._send_message_payload_for_client(
-                            runtime.client,
-                            target.chat_id,
-                            build_interactive_message(elements),
-                            target.thread_id,
-                        )
-                    except asyncio.CancelledError:
-                        raise
-                    except Exception as exc:  # noqa: BLE001
-                        logger.warning(
-                            "SeaTalk clarify card failed, falling back to text: chat_id=%s error=%r",
-                            chat_id,
-                            exc,
-                        )
-                    else:
-                        message_id = _message_id(response)
-                        _arm_clarify_text_capture(clarify_id)
-                        logger.info(
-                            "SeaTalk clarify card sent: chat_id=%s message_id=%s choices=%d",
-                            target.chat_id,
-                            message_id,
-                            len(choices),
-                        )
-                        return SendResult(
-                            success=True, message_id=message_id, raw_response=response
-                        )
-                return await super().send_clarify(
-                    chat_id=chat_id,
-                    question=question,
-                    choices=choices,
-                    clarify_id=clarify_id,
-                    session_key=session_key,
-                    metadata=metadata,
-                )
-        except TimeoutError:
-            logger.warning(
-                "SeaTalk clarify not delivered within the caller's budget: chat_id=%s", chat_id
+        if elements is None:
+            return await super().send_clarify(
+                chat_id=chat_id,
+                question=question,
+                choices=choices,
+                clarify_id=clarify_id,
+                session_key=session_key,
+                metadata=metadata,
             )
-            return SendResult(success=False, error="clarify delivery timed out")
+        try:
+            target = await self._resolve_target(chat_id, metadata)
+            runtime = self._runtime_for_target(target)
+            response = await self._send_message_payload_for_client(
+                runtime.client,
+                target.chat_id,
+                build_interactive_message(elements),
+                target.thread_id,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("SeaTalk clarify card failed: chat_id=%s error=%r", chat_id, exc)
+            return SendResult(success=False, error=str(exc))
+        message_id = _message_id(response)
+        if message_id:
+            _put_bounded(
+                self._clarify_cards,
+                clarify_id,
+                SeaTalkClarifyCard(
+                    message_id=message_id,
+                    chat_id=target.chat_id,
+                    thread_id=target.thread_id,
+                    account_id=target.account_id or self._default_account_id,
+                ),
+            )
+        logger.info(
+            "SeaTalk clarify card sent: chat_id=%s message_id=%s choices=%d",
+            target.chat_id,
+            message_id,
+            len(choices),
+        )
+        return SendResult(success=True, message_id=message_id, raw_response=response)
+
+    async def retire_clarify_card(self, clarify_id: str, notice: str) -> None:
+        card = self._clarify_cards.pop(clarify_id, None)
+        if card is None:
+            return
+        await self._close_clarify_card(
+            card, chosen_index=None, status=notice, failure_notice=None
+        )
 
     async def send_typing(self, chat_id: str, metadata: dict[str, Any] | None = None) -> SendResult:
         try:
@@ -1007,9 +1003,7 @@ class SeaTalkAdapter(BasePlatformAdapter):
         if claim in self._clarify_claimed:
             logger.info("SeaTalk clarify click ignored: already claimed")
             return
-        self._clarify_claimed[claim] = None
-        while len(self._clarify_claimed) > CLARIFY_CLAIMED_MAX:
-            self._clarify_claimed.popitem(last=False)
+        _put_bounded(self._clarify_claimed, claim, None)
         try:
             from tools import clarify_gateway as clarify_mod
         except Exception as exc:  # noqa: BLE001
@@ -1044,6 +1038,7 @@ class SeaTalkAdapter(BasePlatformAdapter):
             notice = None
             failure_notice = f"{CLARIFY_ANSWERED_PREFIX} {label}" if resolved else CLARIFY_CLOSED_REPLY
 
+        self._clarify_cards.pop(clarify_id, None)
         await self._close_clarify_card(
             card,
             chosen_index=chosen_index,
@@ -1347,21 +1342,9 @@ class SeaTalkAdapter(BasePlatformAdapter):
 
 
 def _raw_config_file() -> dict[str, Any]:
-    try:
-        import yaml
-        from hermes_cli.config import get_config_path
-    except Exception:
-        return {}
+    from hermes_cli.config import read_raw_config
 
-    path = get_config_path()
-    if not path.exists():
-        return {}
-    try:
-        with path.open(encoding="utf-8") as handle:
-            loaded = yaml.safe_load(handle) or {}
-    except Exception:
-        return {}
-    return loaded if isinstance(loaded, dict) else {}
+    return read_raw_config()
 
 
 def _config_file_extra() -> dict[str, Any]:
@@ -1636,32 +1619,15 @@ def _cfg_csv(config: Any, extra_name: str, *, lower: bool = False) -> set[str]:
     return {item.strip() for item in csv.split(",") if item.strip()}
 
 
-def _patch_send_message_tool() -> None:
-    """Inject SeaTalk target parsing into ``send_message``."""
+def _parse_seatalk_target_ref(target_ref: str) -> tuple[str, str | None] | None:
     try:
-        import tools.send_message_tool as send_message_tool
-    except ImportError:
-        return
-
-    original = send_message_tool._parse_target_ref
-    if getattr(original, "_seatalk_patched", False):
-        return
-
-    def _patched_parse(platform_name: str, target_ref: str):
-        if platform_name == SEATALK_PLATFORM:
-            try:
-                target = parse_seatalk_target(
-                    target_ref,
-                    known_accounts=_known_account_ids_from_extra(_config_file_extra()),
-                )
-            except ValueError:
-                return None, None, False
-            return _account_qualified_target(target.account_id, target.chat_id), target.thread_id, True
-        return original(platform_name, target_ref)
-
-    _patched_parse._seatalk_patched = True  # type: ignore[attr-defined]
-    _patched_parse._seatalk_original = original  # type: ignore[attr-defined]
-    send_message_tool._parse_target_ref = _patched_parse
+        target = parse_seatalk_target(
+            target_ref,
+            known_accounts=_known_account_ids_from_extra(_config_file_extra()),
+        )
+    except ValueError:
+        return None
+    return _account_qualified_target(target.account_id, target.chat_id), target.thread_id
 
 
 def _patch_send_to_platform() -> None:
@@ -1971,7 +1937,6 @@ async def _fetch_outbound_media_bytes(client: Any, url: str) -> bytes:
 def register(ctx: Any) -> None:
     """Plugin entry point called by the Hermes plugin loader."""
     os.environ[INTERNAL_ALLOW_ALL_ENV] = "true"
-    _patch_send_message_tool()
     _patch_send_to_platform()
 
     if getattr(ctx, "_seatalk_platform_registered", False):
@@ -1993,6 +1958,7 @@ def register(ctx: Any) -> None:
         cron_deliver_env_var="SEATALK_HOME_CHANNEL",
         env_enablement_fn=_seatalk_env_enablement,
         standalone_sender_fn=_seatalk_standalone_send,
+        parse_target_ref_fn=_parse_seatalk_target_ref,
     )
     register_seatalk_tool(ctx)
     setattr(ctx, "_seatalk_platform_registered", True)

@@ -185,9 +185,9 @@ restricted.
 When the agent asks a single-select question with its `clarify` tool, it is
 delivered as an interactive card with one button per choice plus `Other…`;
 multi-select and open-ended questions, more than four choices, or an over-long
-prompt stay a numbered text list. Either way the question can also be answered
-by typing. Tapping a choice retires the card into a checklist; a question
-answered by typing or left to expire keeps its buttons until someone taps one.
+prompt stay a numbered text list. After tapping `Other…`, any text is the
+answer. Tapping a choice retires the card into a checklist; a question that ends
+any other way retires the card with Hermes' notice.
 Clicks follow the same `dm_policy` and `group_policy` rules as inbound messages.
 
 SeaTalk sender email is preferred as `user_id`; when email is unavailable,

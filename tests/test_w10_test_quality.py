@@ -52,17 +52,14 @@ def test_t10_03b_registry_isolation_removed_prior_test_entry():
 def test_t10_04a_patch_isolation_can_patch_runtime_modules():
     import tools.send_message_tool as send_message_tool
 
-    seatalk_adapter._patch_send_message_tool()
     seatalk_adapter._patch_send_to_platform()
 
-    assert getattr(send_message_tool._parse_target_ref, "_seatalk_patched", False) is True
     assert getattr(send_message_tool._send_to_platform, "_seatalk_patched", False) is True
 
 
 def test_t10_04b_patch_isolation_removed_prior_test_wrappers():
     import tools.send_message_tool as send_message_tool
 
-    assert not getattr(send_message_tool._parse_target_ref, "_seatalk_patched", False)
     assert not getattr(send_message_tool._send_to_platform, "_seatalk_patched", False)
 
 

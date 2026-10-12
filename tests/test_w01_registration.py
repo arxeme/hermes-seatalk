@@ -89,6 +89,7 @@ def test_t01_01_minimal_relay_config_registers_platform(monkeypatch):
     assert "allowed_users_env" not in entry
     assert entry["allow_all_env"] == "HERMES_SEATALK_ALLOW_ALL"
     assert entry["max_message_length"] == 4000
+    assert entry["parse_target_ref_fn"] is adapter._parse_seatalk_target_ref
     assert adapter.os.environ["HERMES_SEATALK_ALLOW_ALL"] == "true"
     assert "HERMES_SEATALK_ALLOWED_USERS" not in adapter.os.environ
     assert "SEATALK_HOME_CHANNEL" not in adapter.os.environ

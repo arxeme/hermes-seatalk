@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from types import SimpleNamespace
-
 import pytest
 
 pytest.importorskip("gateway", reason="requires Hermes gateway")
@@ -49,17 +47,16 @@ def _register_seatalk_auth_entry():
 def _gateway_auth(source: SessionSource) -> bool:
     _register_seatalk_auth_entry()
     pairing_store = FakePairingStore()
-    runner = SimpleNamespace(
-        pairing_store=pairing_store,
-        # authz_mixin consults the upstream-relay delegation check before the
-        # env allowlists, then resolves the (per-profile) pairing store;
-        # SeaTalk never delegates authz upstream and uses the global store.
-        _adapter_authorization_is_upstream=lambda platform, *, profile=None: False,
-        _pairing_store_for=lambda source: pairing_store,
-        # Single-profile gateway: adapter policy lookups resolve to no profile.
-        _adapter_profile_for_source=lambda source: None,
-    )
-    return GatewayRunner._is_user_authorized(runner, source)
+    runner = GatewayRunner.__new__(GatewayRunner)
+    runner.pairing_store = pairing_store
+    # authz_mixin consults the upstream-relay delegation check before the
+    # env allowlists, then resolves the (per-profile) pairing store;
+    # SeaTalk never delegates authz upstream and uses the global store.
+    runner._adapter_authorization_is_upstream = lambda platform, *, profile=None: False
+    runner._pairing_store_for = lambda source: pairing_store
+    # Single-profile gateway: adapter policy lookups resolve to no profile.
+    runner._adapter_profile_for_source = lambda source: None
+    return runner._is_user_authorized(source)
 
 
 def _source(user_id, user_id_alt="EmpABC", chat_type="dm", chat_id="EmpABC"):

@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -56,25 +57,7 @@ def _isolate_runtime_patches():
     try:
         import tools.send_message_tool as send_message_tool
 
-        snapshots.append((send_message_tool, "_parse_target_ref", send_message_tool._parse_target_ref))
         snapshots.append((send_message_tool, "_send_to_platform", send_message_tool._send_to_platform))
-    except Exception:
-        pass
-
-    try:
-        from gateway.config import GatewayConfig
-
-        snapshots.append((GatewayConfig, "get_home_channel", GatewayConfig.get_home_channel))
-    except Exception:
-        pass
-
-    try:
-        import cron.scheduler as scheduler
-
-        snapshots.append((scheduler, "_KNOWN_DELIVERY_PLATFORMS", scheduler._KNOWN_DELIVERY_PLATFORMS))
-        snapshots.append((scheduler, "_HOME_TARGET_ENV_VARS", dict(scheduler._HOME_TARGET_ENV_VARS)))
-        snapshots.append((scheduler, "_get_home_target_chat_id", scheduler._get_home_target_chat_id))
-        snapshots.append((scheduler, "_get_home_target_thread_id", scheduler._get_home_target_thread_id))
     except Exception:
         pass
 
@@ -82,3 +65,19 @@ def _isolate_runtime_patches():
 
     for obj, name, value in snapshots:
         setattr(obj, name, value)
+
+
+@pytest.fixture
+def seatalk_platform(monkeypatch, tmp_path):
+    gateway_config = pytest.importorskip("gateway.config")
+    from gateway.platform_registry import PlatformEntry, platform_registry
+    from hermes_seatalk import adapter
+
+    captured = {}
+    adapter.register(SimpleNamespace(
+        register_platform=lambda **kwargs: captured.update(kwargs),
+        register_tool=lambda **kwargs: None,
+    ))
+    platform_registry.register(PlatformEntry(**captured))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    return gateway_config.Platform("seatalk")
