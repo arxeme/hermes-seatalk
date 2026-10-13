@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import sys
 from types import SimpleNamespace
 
@@ -241,38 +240,19 @@ async def test_t14_13_single_select_sends_a_card(fake_clarify):
     assert result.success is True
     assert client.sent[0][2]["tag"] == "interactive_message"
     assert seatalk._clarify_claimed == {}
-    assert fake_clarify.awaited == [CID]
+    assert fake_clarify.awaited == []
 
 
 @pytest.mark.asyncio
-async def test_t14_14_card_send_failure_falls_back_to_text(fake_clarify):
+async def test_t14_14_card_send_failure_leaves_text_fallback_to_gateway(fake_clarify):
     client = FakeClarifyClient(card_send_error=RuntimeError("boom"))
     seatalk = adapter.SeaTalkAdapter(_config(client))
 
     result = await seatalk.send_clarify("group/G1", "Proceed?", ["Yes", "No"], CID, "sess")
 
-    assert result.success is True
-    assert client.sent[0][2]["tag"] == "text"
-    assert seatalk._clarify_claimed == {}
-
-
-@pytest.mark.asyncio
-async def test_t14_14b_over_budget_delivers_nothing(fake_clarify, monkeypatch):
-    monkeypatch.setattr(adapter, "CLARIFY_SEND_TIMEOUT_SECONDS", 0.01)
-
-    class SlowClient(FakeClarifyClient):
-        async def send_group_chat(self, group_id, message, thread_id=None):
-            await asyncio.sleep(0.5)
-            return await super().send_group_chat(group_id, message, thread_id)
-
-    client = SlowClient()
-    seatalk = adapter.SeaTalkAdapter(_config(client))
-
-    result = await seatalk.send_clarify("group/G1", "Proceed?", ["Yes", "No"], CID, "sess")
-
-    # The caller has already given up, so a late card or list would land unanswerable.
     assert result.success is False
     assert client.sent == []
+
 
 @pytest.mark.asyncio
 async def test_t14_15_choice_click_resolves_and_closes(fake_clarify):
@@ -283,6 +263,7 @@ async def test_t14_15_choice_click_resolves_and_closes(fake_clarify):
 
     assert fake_clarify.resolved == [(CID, "No")]
     assert f"{clarify_card.CHOSEN_OPTION} No" in _closed_text(client)
+    assert seatalk._clarify_cards == {}
 
 
 @pytest.mark.asyncio
@@ -361,8 +342,7 @@ async def test_t14_18_other_click_closes_the_card(fake_clarify):
 
     await seatalk.handle_clarify_click(clarify_id=CID, index=None, card=_card())
 
-    # Once on send, once on the tap, whose return value says the prompt is still open.
-    assert fake_clarify.awaited == [CID, CID]
+    assert fake_clarify.awaited == [CID]
     assert fake_clarify.resolved == []
     text = _closed_text(client)
     assert f"{clarify_card.CHOSEN_OPTION} {clarify_card.CLARIFY_OTHER_LABEL}" in text
@@ -435,6 +415,17 @@ async def test_t14_22_missing_entry_uses_a_positional_label(fake_clarify):
     await seatalk.handle_clarify_click(clarify_id=CID, index=1, card=_card())
 
     assert fake_clarify.resolved == [(CID, "choice 2")]
+
+
+@pytest.mark.asyncio
+async def test_t14_22b_retire_closes_the_open_card(fake_clarify):
+    client = FakeClarifyClient()
+    seatalk = await _sent_card(client)
+
+    await seatalk.retire_clarify_card(CID, "Expired")
+
+    assert "Expired" in _closed_text(client)
+    assert seatalk._clarify_cards == {}
 
 
 class RecordingAdapter:

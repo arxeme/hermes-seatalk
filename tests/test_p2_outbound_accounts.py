@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -198,11 +199,11 @@ async def test_t2_07_10_home_channel_env_account_target(monkeypatch):
 def test_t2_07_11_cron_account_target(monkeypatch):
     """Account-qualified home channels resolve via the declarative
     cron_deliver_env_var path (no scheduler monkey-patching needed)."""
-    scheduler = pytest.importorskip("cron.scheduler")
+    delivery = pytest.importorskip("cron.scheduler_delivery")
     from gateway.platform_registry import PlatformEntry, platform_registry
 
-    monkeypatch.setattr(scheduler, "_KNOWN_DELIVERY_PLATFORMS", frozenset({"telegram"}))
-    monkeypatch.setattr(scheduler, "_HOME_TARGET_ENV_VARS", {"telegram": "TELEGRAM_HOME_CHANNEL"})
+    monkeypatch.setattr(delivery, "_KNOWN_DELIVERY_PLATFORMS", frozenset({"telegram"}))
+    monkeypatch.setattr(delivery, "_HOME_TARGET_ENV_VARS", {"telegram": "TELEGRAM_HOME_CHANNEL"})
     monkeypatch.setenv("SEATALK_HOME_CHANNEL", "staging:group/Home")
 
     platform_registry.register(PlatformEntry(
@@ -213,35 +214,30 @@ def test_t2_07_11_cron_account_target(monkeypatch):
         cron_deliver_env_var="SEATALK_HOME_CHANNEL",
     ))
 
-    assert scheduler._resolve_single_delivery_target({}, "seatalk") == {
+    resolved = delivery._resolve_single_delivery_target({}, "seatalk")
+    assert {key: resolved[key] for key in ("platform", "chat_id", "thread_id")} == {
         "platform": "seatalk",
         "chat_id": "staging:group/Home",
         "thread_id": None,
     }
 
 
-def test_t2_07_12_and_15_send_message_parser(monkeypatch):
-    send_message_tool = pytest.importorskip("tools.send_message_tool")
+def test_t2_07_12_send_message_resolves_account_target(monkeypatch, tmp_path, seatalk_platform):
+    targets = pytest.importorskip("tools.send_message_targets")
+    (tmp_path / "config.yaml").write_text(
+        "model: test-model\n"
+        "platforms:\n"
+        "  seatalk:\n"
+        "    extra:\n"
+        "      accounts:\n"
+        "        default: {}\n"
+        "        staging: {}\n"
+    )
+    monkeypatch.setitem(sys.modules, "yaml", None)
 
-    original = getattr(send_message_tool._parse_target_ref, "_seatalk_original", send_message_tool._parse_target_ref)
-    monkeypatch.setattr(send_message_tool, "_parse_target_ref", original)
-    monkeypatch.setattr(
-        adapter,
-        "_config_file_extra",
-        lambda: {"accounts": {"default": {}, "staging": {}}},
-    )
-    adapter._patch_send_message_tool()
-
-    assert send_message_tool._parse_target_ref("seatalk", "seatalk:staging:EmpABC") == (
-        "staging:EmpABC",
-        None,
-        True,
-    )
-    assert send_message_tool._parse_target_ref("discord", "123456789:987654321") == (
-        "123456789",
-        "987654321",
-        True,
-    )
+    # The setup wizard writes back what this returns, so it must be the whole file.
+    assert adapter._raw_config_file()["model"] == "test-model"
+    assert targets.resolve_send_target("seatalk", "staging:EmpABC") == ("staging:EmpABC", None, None)
 
 
 @pytest.mark.asyncio
