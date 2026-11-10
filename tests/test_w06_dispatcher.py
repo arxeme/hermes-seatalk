@@ -1008,3 +1008,35 @@ def test_t06_31_detect_mime_extended_formats():
     assert _detect_mime_from_buffer(b"7z\xbc\xaf\x27\x1c" + b"\x00" * 10) == "application/x-7z-compressed"
     # RAR
     assert _detect_mime_from_buffer(b"Rar!" + b"\x00" * 12) == "application/vnd.rar"
+
+
+# ── Group command after leading mentions ─────────────────────────────────────
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("event_type", "text", "mentioned", "expected"),
+    [
+        ("new_mentioned_message_received_from_group_chat", "@Bot /reset", ["Bot"], "/reset"),
+        ("new_mentioned_message_received_from_group_chat", "@Bob Lee @Bot /model x", ["Bob", "Bob Lee", "Bot"], "/model x"),
+        ("new_message_received_from_thread", "@Bot /reset", ["Bot"], "/reset"),
+        ("new_mentioned_message_received_from_group_chat", "@Bot what's up?", ["Bot"], "@Bot what's up?"),
+        ("new_mentioned_message_received_from_group_chat", "@Botty /reset", ["Bot"], "@Botty /reset"),
+        ("new_mentioned_message_received_from_group_chat", "@Bot /reset", [], "@Bot /reset"),
+    ],
+)
+async def test_t06_32_leading_mentions_dropped_before_command(event_type, text, mentioned, expected):
+    """Leading mentions named in mentioned_list are dropped only when a command follows."""
+    fake_adapter = FakeAdapter()
+    dispatcher = _dispatcher(fake_adapter)
+    payload = _group_payload(event_id="ev-command", text=text)
+    payload["event_type"] = event_type
+    actors = [{"username": name, "seatalk_id": f"id-{name}"} for name in mentioned]
+    message = payload["event"]["message"]
+    if event_type == "new_message_received_from_thread":
+        message["mentioned_list"] = actors
+    else:
+        message["text"]["mentioned_list"] = actors
+    await dispatcher.dispatch(payload, "webhook")
+
+    assert fake_adapter.events[0].text == expected
