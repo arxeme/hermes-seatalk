@@ -392,6 +392,7 @@ class SeaTalkEventDispatcher:
         message_id = _str_or_none(message.get("message_id")) or _str_or_none(payload.get("event_id"))
         thread_id = _str_or_none(message.get("thread_id"))
         text, media_urls, media_types, media_errors = await self._resolve_message_content(message)
+        text = _command_after_leading_mentions(text, _mentioned_usernames(message))
         quoted_id = _str_or_none(message.get("quoted_message_id"))
         if not text and not media_urls and not quoted_id:
             logger.info("SeaTalk empty group event dropped: channel=%s", chat_id)
@@ -828,6 +829,32 @@ def _normalize_email(value: Any) -> str | None:
 
 def _user_name(employee_code: str, email: str | None) -> str:
     return f"{employee_code} ({email})" if email else employee_code
+
+
+def _mentioned_usernames(message: dict[str, Any]) -> list[str]:
+    text = message.get("text")
+    mentioned = text.get("mentioned_list") if isinstance(text, dict) else None
+    if not isinstance(mentioned, list):
+        mentioned = message.get("mentioned_list")
+    if not isinstance(mentioned, list):
+        return []
+    return [str(actor["username"]) for actor in mentioned if isinstance(actor, dict) and actor.get("username")]
+
+
+def _command_after_leading_mentions(text: str, usernames: list[str]) -> str:
+    # "@Bob" must not consume the start of "@Bob Lee".
+    mentions = [f"@{name}" for name in sorted(usernames, key=len, reverse=True)]
+    remaining = text.lstrip()
+    while True:
+        for mention in mentions:
+            if remaining.startswith(mention):
+                remaining = remaining[len(mention):].lstrip()
+                break
+        else:
+            break
+    # The adapter cannot tell which mentioned_list entry is the bot, so only a
+    # command loses the mentions; ordinary text keeps who else was addressed.
+    return remaining if remaining.startswith("/") else text
 
 
 def _sender_in_allowlist(employee_code: str, email: str | None, allowlist: set[str]) -> bool:
